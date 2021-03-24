@@ -60,7 +60,7 @@ Get started with Landmark Explanation!
 
 ## Reference
 
-For a detailed description of the work please read (our paper)[https://openproceedings.org/2021/conf/edbt/p259.pdf]. Please cite the paper if you use the code from this repository in your work.
+For a detailed description of the work please read [our paper](https://openproceedings.org/2021/conf/edbt/p259.pdf). Please cite the paper if you use the code from this repository in your work.
 
 ```
 @inproceedings{DBLP:conf/edbt/BaraldiBP021,
