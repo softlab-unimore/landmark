@@ -145,130 +145,7 @@ def correlation_vs_landmark(df, word_relevance, predictor, match_ids, no_match_i
                 res_list_of_dict.append(res_dict.copy())
     return pd.DataFrame(res_list_of_dict)
 
-
-def generate_altered_df(df, y_true, word_relevance_df, tokens_to_remove):
-    new_df = df.copy()
-    for i in tqdm(range(df.shape[0])):
-        el = new_df.iloc[[i]]
-        id = el['id'].values[0]
-        turn_tokens_to_remove = tokens_to_remove.query(f'id == {id}')
-        # wr_el = word_relevance_df.query(f'id == {id}')
-        # tokens_to_remove = token_remotion_fn(wr_el)
-        for side in ['left', 'right']:
-            tokens_to_remove_side = turn_tokens_to_remove[[side + '_word', side + '_attribute']].values
-            for word, attr in tokens_to_remove_side:
-                if word != '[UNP]':
-                    try:
-                        el[side + '_' + attr] = el[side + '_' + attr].str.replace(word, '', regex=False).str.strip()
-                    except Exception as e:
-                        print(e)
-                        # display(el, side + '_' + attr, word)
-                        assert False
-        if (el[np.setdiff1d(new_df.columns, ['id', 'left_id', 'label', 'right_id'])] != '').any(1).values[0]:
-            new_df.iloc[[i]] = el
-            # else: # TODO delete
-            # print('Not inserted')
-            # display(el)
-            # display('Inserted', new_df.iloc[[i]])
-
-    return new_df
-
-
-def process_roc_auc(y_true, y_pred, plot=True):
-    # display(df.iloc[[10]], new_df.iloc[[10]])
-    if plot:
-        fpr, tpr, thresholds = roc_curve(y_true.astype(int), y_pred)
-
-        fig = px.area(
-            x=fpr, y=tpr,
-            title=f'ROC Curve (AUC={auc(fpr, tpr):.4f})',
-            labels=dict(x='False Positive Rate', y='True Positive Rate'),
-            width=700, height=500
-        )
-        fig.add_shape(
-            type='line', line=dict(dash='dash'),
-            x0=0, x1=1, y0=0, y1=1
-        )
-
-        fig.update_yaxes(scaleanchor="x", scaleratio=1)
-        fig.update_xaxes(constrain='domain')
-        fig.show()
-    auc_score = roc_auc_score(y_true.astype(int), y_pred)
-    return auc_score
-
-
-def token_remotion_delta_performance(df, y_true, word_relevance, predictor, k_list=[10, 5, 3, 1], plot=True,
-                                     score_col='pred'):
-    print(f'Testing {score_col}!')
-    tokens_dict = {}
-    if score_col == 'pred':
-        th = 0.5
-    else:
-        th = 0
-
-    x = word_relevance.copy()
-    x['tmp_score'] = x[score_col] * np.where(x.label.values == 1, 1, -1)
-    tokens_dict['del_useful'] = x[(x[score_col] >= th) == (x.label.values == 1)].sort_values('tmp_score',
-                                                                                             ascending=False).groupby(
-        'id').head
-    # .sort_values(score_col, ascending=(x.label.values[0] == 0))
-    tokens_dict['del_useless'] = x[(x[score_col] < th) == (x.label.values == 1)].sort_values('tmp_score',
-                                                                                             ascending=True).groupby(
-        'id').head
-    tokens_dict['del_random'] = partial(x.groupby('id').sample, random_state=0)
-    # ascending (low is useful) for nomatch
-    # .sort_values(score_col, ascending=(x.label.values[0] == 1))
-    # ascending (low is useless (NOT useful)) for match
-
-    res_list = []
-    tmp_dict = {}
-
-    print('Evaluating delta performance on full dataset with token remotion.')
-    for k in k_list:
-        tmp_dict.update(n_tokens=k)
-        df_dict = {}
-        gc.collect()
-        torch.cuda.empty_cache()
-        for fn_name in ['del_random', 'del_useful', 'del_useless']:
-            code = f'{fn_name}-{k}'
-            print(code)
-            if fn_name != 'del_random':
-                tokens_to_remove = tokens_dict[fn_name](k)
-                turn_df = df
-                turn_word_relevance = word_relevance
-            else:
-                sample_mask = x.groupby('id')[score_col].count() >= k
-                turn_df = df.sort_values('id')[sample_mask]
-                turn_word_relevance = word_relevance[word_relevance.id.isin(turn_df['id'].values)]
-                tokens_to_remove = turn_word_relevance.groupby('id').sample(k, random_state=0)
-            altered_df = generate_altered_df(turn_df, turn_df.label.values.astype(int), turn_word_relevance,
-                                             tokens_to_remove=tokens_to_remove)
-            df_dict[code] = altered_df
-
-        pred_dict = {}
-        all_df = pd.concat([value for key, value in df_dict.items()])
-        all_df['id'] = np.arange(all_df.shape[0])
-        print('Predicting')
-        all_pred = predictor(all_df)
-        start = 0
-        for key, value in df_dict.items():
-            stop = value.shape[0] + start
-            pred_dict[key] = all_pred[start:stop]
-            start = stop
-        for fn_name in ['del_random', 'del_useful', 'del_useless']:
-            tmp_dict['function'] = fn_name
-            code = f'{fn_name}-{k}'
-            new_pred = pred_dict[code]
-            print(code)
-            turn_y_true = df_dict[code].label.values.astype(int)
-            auc_score = process_roc_auc(turn_y_true, new_pred, plot)
-            tmp_dict['auc_score'] = auc_score
-            for score_name, scorer in [['f1', f1_score], ['precision', precision_score], ['recall', recall_score]]:
-                tmp_dict[score_name] = scorer(turn_y_true, new_pred > .5)
-            res_list.append(tmp_dict.copy())
-            pred_dict[code] = new_pred
-    return pd.DataFrame(res_list)
-
+from landmark.landmark import Landmark
 
 
 class Evaluate_explanation(Landmark):
@@ -339,31 +216,6 @@ class Evaluate_explanation(Landmark):
             fixed_df = None
         return pd.concat([variable_df, fixed_df], axis=1)
 
-    def restucture_and_predict(self, perturbed_strings):
-        """
-            Restructure the perturbed strings from LIME and return the related predictions.
-        """
-        non_null_rows = np.array([True] * len(perturbed_strings))
-        if self.remove_decision_unit_only is True:
-            for i, value in enumerate(perturbed_strings):
-                if value.empty:
-                    non_null_rows[i] = False
-                else:
-                    value['id'] = i
-            self.tmp_dataset = pd.concat(perturbed_strings)
-
-        else:
-            self.tmp_dataset = self.restructure_strings(perturbed_strings)
-            self.tmp_dataset.reset_index(inplace=True, drop=True)
-        ret = np.ndarray(shape=(len(perturbed_strings), 2))
-        ret[:, :] = 0.5
-        predictions = self.model_predict(self.tmp_dataset)
-        # assert len(perturbed_strings) == len(predictions), f'df and predictions shape are misaligned'
-
-        ret[non_null_rows, 1] = np.array(predictions)
-        ret[:, 0] = 1 - ret[:, 1]
-        return ret
-
     def generate_descriptions(self, combinations_to_remove, words_with_prefixes, variable_encoded):
         description_to_evaluate = []
         comb_name_sequence = []
@@ -396,7 +248,7 @@ class Evaluate_explanation(Landmark):
 
         data_list = []
         description_to_evaluate_list = []
-        for index, id in enumerate(start_el.id.unique()):
+        for index, id_ in enumerate(start_el.id.unique()):
             all_comb = {}
             if utility is False:
                 turn_comb = self.get_tokens_to_remove(self.start_pred[index], self.words_with_prefixes[index],
@@ -444,7 +296,7 @@ class Evaluate_explanation(Landmark):
         else:
             self.batch_fixed_data = None
         all_descriptions = np.concatenate(description_to_evaluate_list)
-        preds = self.restucture_and_predict(all_descriptions)[:, 1] # todo check here
+        preds = self.restucture_and_predict(all_descriptions)[:, 1]
         assert len(preds) == len(all_descriptions)
         splitted_preds = []
         start_idx = 0
@@ -494,25 +346,35 @@ class Evaluate_explanation(Landmark):
         lent = len(impacts_sorted)
         ntokens = int(lent * self.percentage)
         np.random.seed(0)
-        combination['random'] = [np.random.choice(lent, ntokens, ) for i in range(self.num_round)]
+        combination['random'] = [np.random.choice(lent, ntokens, ) for _ in range(self.num_round)]
         return combination
 
-    def get_tokens_to_change_class(self, start_pred, impacts_sorted, delta=0):
-        i = 0
+    def get_tokens_to_change_class(self, start_pred, impacts_sorted, delta: float = 0.0):
         tokens_to_remove = []
-        positive = start_pred > .5
-        delta = -delta if not positive else delta
+        positive_match = start_pred > .5
+        # delta = -delta if not positive else delta
         index = np.arange(0, len(impacts_sorted))
-        if not positive:
+
+        if not positive_match:
             index = index[::-1]  # start removing negative impacts to push the score towards match if not positive
-        while len(tokens_to_remove) < len(impacts_sorted) and ((start_pred - np.sum(
-                impacts_sorted[tokens_to_remove])) > 0.5 + delta) == positive:
-            if (impacts_sorted[
-                    index[i]] > 0) == positive:  # remove positive impact if element is match, neg impacts if no match
-                tokens_to_remove.append(index[i])
-                i += 1
-            else:
+
+        delta_score_to_achieve = abs(start_pred - 0.5) + delta
+        current_delta_score = 0
+
+        for i in index:
+            current_token_impact = impacts_sorted[i] * (1 if positive_match else -1)
+            # remove positive impact if element is match, neg impacts if no match
+            if current_token_impact > 0:
+                tokens_to_remove.append(i)
+                current_delta_score += current_token_impact
+            else:  # there are no more tokens with positive (negative) impacts
                 break
+
+            # expected_delta = np.abs(np.sum(impacts_sorted[tokens_to_remove]))
+
+            if current_delta_score >= delta_score_to_achieve:
+                break
+
         return tokens_to_remove
 
     def get_tokens_to_remove_AOPC(self, start_pred, tokens_sorted, impacts_sorted, k=10):
