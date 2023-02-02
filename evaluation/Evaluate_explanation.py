@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
-from tqdm.notebook import tqdm
-
+from tqdm.autonotebook import tqdm
 from landmark.landmark import Landmark
 
 

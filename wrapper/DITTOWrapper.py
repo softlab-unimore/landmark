@@ -11,8 +11,7 @@ from ditto_light.exceptions import ModelNotFoundError
 from ditto_light.knowledge import *
 from ditto_light.summarize import Summarizer
 from dotmap import DotMap
-from tqdm.notebook import tqdm
-
+from tqdm.autonotebook import tqdm
 
 class DITTOWrapper(object):
     def __init__(self, task, checkpoint_path, exclude_attrs=['id', 'left_id', 'right_id'], one_by_one=False,

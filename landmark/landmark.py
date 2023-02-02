@@ -1,5 +1,5 @@
 import re
-from tqdm import tqdm
+from tqdm.autonotebook import tqdm
 import numpy as np
 import pandas as pd
 from lime.lime_text import LimeTextExplainer
@@ -34,8 +34,9 @@ class Landmark(object):
         self.right_cols = [x for x in self.cols if x.startswith(self.rprefix)]
         self.cols = self.left_cols + self.right_cols
         self.explanations = {}
+        self.variable_cols = None
 
-    def explain(self, elements, conf='auto', num_samples=500, **argv):
+    def explain(self, elements, conf='auto', num_samples=500, verbose=False, **argv):
         """
         User interface to generate an explanations with the specified configurations for the elements passed in input.
         """
@@ -52,9 +53,10 @@ class Landmark(object):
             no_match_explanation = self.explain(no_match_elements, 'double', num_samples, **argv)
             return pd.concat([match_explanation, no_match_explanation])
 
+        to_cycle = tqdm(range(elements.shape[0])) if verbose else range(elements.shape[0])
         impact_list = []
         if 'LIME' == conf:
-            for idx in tqdm(range(elements.shape[0])):
+            for idx in to_cycle:
                 impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side=None,
                                                 num_samples=num_samples, **argv)
                 impacts['conf'] = 'LIME'
@@ -71,7 +73,7 @@ class Landmark(object):
             add_before = landmark
 
         # right landmark
-        for idx in tqdm(range(elements.shape[0])):
+        for idx in to_cycle:
             impacts = self.explain_instance(elements.iloc[[idx]], variable_side=variable, fixed_side=landmark,
                                             add_before_perturbation=add_before, num_samples=num_samples,
                                             overlap=overlap, **argv)
@@ -84,7 +86,7 @@ class Landmark(object):
             add_before = landmark
 
         # left landmark
-        for idx in tqdm(range(elements.shape[0])):
+        for idx in to_cycle:
             impacts = self.explain_instance(elements.iloc[[idx]], variable_side=variable, fixed_side=landmark,
                                             add_before_perturbation=add_before, num_samples=num_samples,
                                             overlap=overlap, **argv)
@@ -150,7 +152,10 @@ class Landmark(object):
             variable_data = Mapper(variable_cols, self.split_expression).encode_attr(variable_el)
 
         elif variable_side == 'all':
-            variable_cols = self.left_cols + self.right_cols
+            if self.variable_cols is None:
+                variable_cols = self.left_cols + self.right_cols
+            else:
+                variable_cols = self.variable_cols
 
             self.mapper_variable = Mapper(variable_cols, self.split_expression)
             self.fixed_data = None
@@ -225,12 +230,15 @@ class Landmark(object):
         """
             Restructure the perturbed strings from LIME and return the related predictions.
         """
+        non_null_rows = np.array([True] * len(perturbed_strings))
         self.tmp_dataset = self.restructure_strings(perturbed_strings)
         self.tmp_dataset.reset_index(inplace=True, drop=True)
+        ret = np.ndarray(shape=(len(perturbed_strings), 2))
+        ret[:, :] = 0.5
         predictions = self.model_predict(self.tmp_dataset)
+        # assert len(perturbed_strings) == len(predictions), f'df and predictions shape are misaligned'
 
-        ret = np.ndarray(shape=(len(predictions), 2))
-        ret[:, 1] = np.array(predictions)
+        ret[non_null_rows, 1] = np.array(predictions)
         ret[:, 0] = 1 - ret[:, 1]
         return ret
 
@@ -285,7 +293,7 @@ class Landmark(object):
 
         return view
 
-    def plot(self, explanation, el, figsize=(16,6)):
+    def plot(self, explanation, el, figsize=(16, 6)):
         exp_double = self.double_explanation_conversion(explanation, el)
         return PlotExplanation.plot(exp_double, figsize)
 
@@ -333,3 +341,4 @@ class Mapper(object):
                                      word_prefix=chr(ord('A') + colpos) + f"{wordpos:02d}_" + word)
                     res_list.append(word_dict.copy())
         return pd.DataFrame(res_list)
+

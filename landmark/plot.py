@@ -35,7 +35,17 @@ class PlotExplanation(object):
                          head_length=0,  # arrow head length
                          width=0.4,  # arrow stem width
                          fc=arrow_color,  # arrow fill color
-                         ec=arrow_color)  # arrow edge color
+                         ec=arrow_color,
+                         )  # arrow edge color
+                width = arrow_lengths[i]
+                offset = 40
+                offset = offset if width > 0 else -offset
+                ax.annotate(format(width, '.3f'),
+                        (width, i),
+                        ha='right' if width > 0 else 'left',
+                        va='center',
+                        xytext=(offset, 2),
+                        textcoords='offset points')
 
         # format plot
         ax.set_title(title)  # add title
