@@ -1,11 +1,9 @@
-import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from pylab import gcf
 
 
-class PlotExplanation(object):
+class PlotExplanation:
     @staticmethod
     def plot_impacts(data, target_col, ax, title):
 
@@ -25,6 +23,8 @@ class PlotExplanation(object):
                 arrow_color = '#347768'
             elif subject.startswith('r'):
                 arrow_color = '#6B273D'
+            else:
+                raise ValueError("Subject doesn't start with 'l' or 'r' values.")
 
             if arrow_lengths[i] != 0:
                 ax.arrow(arrow_starts[i],  # x start point
@@ -35,7 +35,17 @@ class PlotExplanation(object):
                          head_length=0,  # arrow head length
                          width=0.4,  # arrow stem width
                          fc=arrow_color,  # arrow fill color
-                         ec=arrow_color)  # arrow edge color
+                         ec=arrow_color,
+                         )  # arrow edge color
+                width = arrow_lengths[i]
+                offset = 40
+                offset = offset if width > 0 else -offset
+                ax.annotate(format(width, '.3f'),
+                        (width, i),
+                        ha='right' if width > 0 else 'left',
+                        va='center',
+                        xytext=(offset, 2),
+                        textcoords='offset points')
 
         # format plot
         ax.set_title(title)  # add title
@@ -119,3 +129,110 @@ class PlotExplanation(object):
         # plt.plot([0, 1], [0.5, 0.5], color='lightgreen', lw=5, transform=gcf().transFigure, clip_on=False)
 
         return fig, axes
+
+    @staticmethod
+    def plot_counterfactual(data_df, pred_percentage=True):
+        def generate_strikethrough_description(encoded_description, tokens_to_remove):
+            new_description = ''
+            whitespace = ' '
+
+            for desc_token in encoded_description:
+                token = desc_token.split('_')[-1]  # remove prefix
+                if desc_token in tokens_to_remove:
+                    new_description = whitespace.join([new_description, f'<del>{token}</del>'])
+                else:
+                    new_description = whitespace.join([new_description, token])
+
+            return new_description
+
+        html_page = '<html>'
+        html_page += """<head>
+            <style>
+                table, tr, td, th {
+                    border: 1px solid gray;
+                    text-align: center;
+                    border-collapse: collapse;
+                }
+                
+                del {
+                    color: red;
+                }
+                
+                .tr2 {
+                    border-bottom: 3px solid black;
+                }
+                
+                .tr1 {
+                    border-top: 3px solid black;
+                }
+                
+            </style>
+        </head>
+        """
+        html_page += '<body>'
+        html_page += '<table>'
+        html_page += """
+            <tr>
+                <th></th>
+                <th>Match</th>
+                <th>Prediction</th>
+                <th>Non-Match</th>
+                <th>New Prediction</th>
+            </tr>
+        """
+        for _, row in data_df.iterrows():
+            # left_attributes = [row[attribute] for attribute in row.keys() if attribute.startswith('left_')
+            #                    and not 'description' in attribute]
+            # right_attributes = [row[attribute] for attribute in row.keys() if attribute.startswith('right_')
+            #                     and not 'description' in attribute]
+
+
+            html_page += f"""
+                <tr class='tr1'>
+                    <td class='entity1'>
+                        Entity 1
+                    </td>
+                    <td class='left_entity1'>
+                        {row['left_description']}
+                    </td>
+                    <td class='left_pred' rowspan=2>
+            """
+            if pred_percentage:
+                html_page += f"{row['start_pred']:.2%}"
+            else:
+                html_page += f"{row['start_pred']:.4}"
+
+            html_page += f"""
+                    </td>
+                    <td class='right_entity1'>
+                        {generate_strikethrough_description(row['encoded_descs'][0], row['tokens_removed'][0]) 
+                        if row['encoded_descs'][0] else row['left_description']} 
+                    </td>
+                    <td class='right_pred' rowspan=2>
+            """
+            if pred_percentage:
+                html_page += f"{row['new_pred']:.2%}"
+            else:
+                html_page += f"{row['new_pred']:.4}"
+
+            html_page += f"""
+                    </td>
+                </tr>
+                <tr class='tr2'>
+                    <td class='entity2'>
+                        Entity 2
+                    </td>
+                    <td class='left_entity2'>
+                        {row['right_description']}
+                    </td>
+                    <td class='right_entity2'>
+                        {generate_strikethrough_description(row['encoded_descs'][1], row['tokens_removed'][1])
+                        if row['encoded_descs'][1] else row['right_description']}
+                    </td>
+                </tr>
+            """
+
+        html_page += '</body>'
+        html_page += '</html>'
+
+        return html_page

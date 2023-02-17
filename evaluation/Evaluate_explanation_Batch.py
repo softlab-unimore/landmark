@@ -12,6 +12,9 @@ from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve, auc
 from tqdm.notebook import tqdm
 
+from .removal_strategies import get_tokens_to_remove_five, get_tokens_to_remove_incrementally, \
+    get_tokens_to_remove_aopc, get_tokens_to_remove_degradation, get_tokens_to_remove_sufficiency, \
+    get_tokens_to_remove_single_units, get_tokens_to_change_class
 
 def get_prefix(word_relevance_df, el, side: str):
     assert side in ['left', 'right']
@@ -45,14 +48,16 @@ def get_prefix(word_relevance_df, el, side: str):
                     word_prefixes.append(assigned_pref[idx])
                 else:
                     assert False, word
+
     return word_prefixes
 
 
-def append_prefix(word_relevance, df, decision_unit_view=False, exclude_attrs=['id', 'left_id', 'right_id', 'label']):
+def append_prefix(em_df, word_relevance, decision_unit_view=False,
+                  exclude_attrs=('id', 'left_id', 'right_id', 'label')):
     ids = word_relevance['id'].unique()
-    res_df = []
+    res_df = list()
     for id in ids:
-        el = df[df.id == id]
+        el = em_df[em_df.id == id]
         word_relevance_el = word_relevance[word_relevance.id == id]
         if decision_unit_view is True:
             word_relevance_el['left_word_prefixes'] = get_prefix(word_relevance_el, el, 'left')
@@ -60,21 +65,22 @@ def append_prefix(word_relevance, df, decision_unit_view=False, exclude_attrs=['
         res_df.append(word_relevance_el.copy())
     res_df = pd.concat(res_df)
     if decision_unit_view is True:
-        mapper = Mapper(df.loc[:, np.setdiff1d(df.columns, exclude_attrs)], r' ')
+        mapper = Mapper(em_df.loc[:, np.setdiff1d(em_df.columns, exclude_attrs)], r' ')
         assert len(mapper.attr_map.keys()) % 2 == 0, 'The attributes must be the same for the two sources.'
         shift = int(len(mapper.attr_map.keys()) / 2)
         res_df['right_word_prefixes'] = res_df['right_word_prefixes'].apply(
             lambda x: chr(ord(x[0]) + shift) + x[1:] if x != '[UNP]' else x)
+
     return res_df
 
 
-def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=['id', 'left_id', 'right_id', 'label'],
+def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', 'left_id', 'right_id', 'label'),
                 score_col='pred'):
     print(f'Testing unit remotion with -- {score_col}')
     assert df_to_process.shape[
                0] > 0, f'DataFrame to evaluate must have some elements. Passed df has shape {df_to_process.shape[0]}'
     evaluation_df = df_to_process.copy().replace(pd.NA, '')
-    word_relevance_prefix = append_prefix(word_relevance, evaluation_df)
+    word_relevance_prefix = append_prefix(evaluation_df, word_relevance)
     if score_col == 'pred':
         word_relevance_prefix['impact'] = word_relevance_prefix[score_col] - 0.5
     else:
@@ -87,8 +93,8 @@ def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=['id', '
         side_word_relevance_prefix = word_relevance_prefix.copy()
         side_word_relevance_prefix['word_prefix'] = side_word_relevance_prefix[side + '_word_prefixes']
         side_word_relevance_prefix = side_word_relevance_prefix.query(f'{side}_word != "[UNP]"')
-        ev = Evaluate_explanation(side_word_relevance_prefix, evaluation_df, predict_method=predictor,
-                                  exclude_attrs=exclude_attrs, percentage=.25, num_round=3)
+        ev = EvaluateExplanation(side_word_relevance_prefix, evaluation_df, predict_method=predictor,
+                                 exclude_attrs=exclude_attrs, percentage=.25, num_round=3)
 
         fixed_side = 'right' if side == 'left' else 'left'
         res_df = ev.evaluate_set(df_to_process.id.values, 'bert', variable_side=side, fixed_side=fixed_side,
@@ -110,7 +116,7 @@ def correlation_vs_landmark(df, word_relevance, predictor, match_ids, no_match_i
                                                                        no_match_ids)
     """
     print(f'Testing Landmark correlation with -- {score_col}')
-    explainer = Landmark(predictor, df, exclude_attrs=['id', 'label'], lprefix='left_', rprefix='right_')
+    explainer = Landmark(predictor, df, exclude_attrs=('id', 'label'), lprefix='left_', rprefix='right_')
     res_list_of_dict = []
     for match_code, id_samples in zip(['match', 'nomatch'], [match_ids, no_match_ids]):
         res_dict = {'match_code': match_code}
@@ -140,6 +146,7 @@ def correlation_vs_landmark(df, word_relevance, predictor, match_ids, no_match_i
                     corr = impacts_comparison['impact'].corr(impacts_comparison['relevance'], method=method)
                     res_dict[method] = corr
                 res_list_of_dict.append(res_dict.copy())
+
     return pd.DataFrame(res_list_of_dict)
 
 
@@ -163,10 +170,6 @@ def generate_altered_df(df, y_true, word_relevance_df, tokens_to_remove):
                         assert False
         if (el[np.setdiff1d(new_df.columns, ['id', 'left_id', 'label', 'right_id'])] != '').any(1).values[0]:
             new_df.iloc[[i]] = el
-            # else: # TODO delete
-            # print('Not inserted')
-            # display(el)
-            # display('Inserted', new_df.iloc[[i]])
 
     return new_df
 
@@ -191,6 +194,7 @@ def process_roc_auc(y_true, y_pred, plot=True):
         fig.update_xaxes(constrain='domain')
         fig.show()
     auc_score = roc_auc_score(y_true.astype(int), y_pred)
+
     return auc_score
 
 
@@ -264,13 +268,14 @@ def token_remotion_delta_performance(df, y_true, word_relevance, predictor, k_li
                 tmp_dict[score_name] = scorer(turn_y_true, new_pred > .5)
             res_list.append(tmp_dict.copy())
             pred_dict[code] = new_pred
+
     return pd.DataFrame(res_list)
 
 
 class Landmark(object):
 
-    def __init__(self, predict_method, dataset, exclude_attrs=['id', 'label'], split_expression=' ',
-                 lprefix='left_', rprefix='right_', **argv, ):
+    def __init__(self, predict_method, dataset, exclude_attrs=('id', 'label'), split_expression=' ',
+                 lprefix='left_', rprefix='right_', **argv):
         """
         :param predict_method: of the model to be explained
         :param dataset: containing the elements that will be explained. Used to save the attribute structure.
@@ -295,6 +300,12 @@ class Landmark(object):
         self.cols = self.left_cols + self.right_cols
         self.explanations = {}
 
+        self.add_after_perturbation = None
+        self.overlap = None
+        self.mapper_variable = None
+        self.fixed_data = None
+        self.fixed_side = str()
+
     def explain(self, elements, conf='auto', num_samples=500, verbose=False, **argv):
         """
         User interface to generate an explanations with the specified configurations for the elements passed in input.
@@ -316,7 +327,7 @@ class Landmark(object):
         impact_list = []
         if 'LIME' == conf:
             for idx in to_cycle:
-                impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side=None,
+                impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side='',
                                                 num_samples=num_samples, **argv)
                 impacts['conf'] = 'LIME'
                 impact_list.append(impacts)
@@ -330,6 +341,8 @@ class Landmark(object):
             add_before = None
         elif 'double' == conf:
             add_before = landmark
+        else:
+            raise ValueError
 
         # right landmark
         for idx in to_cycle:
@@ -358,7 +371,7 @@ class Landmark(object):
     def explain_instance(self, el, variable_side='left', fixed_side='right', add_before_perturbation=None,
                          add_after_perturbation=None, overlap=True, num_samples=500, **argv):
         """
-        Main method to wrap the explainer and generate an landmark. A sort of Facade for the explainer.
+        Main method to wrap the explainer and generate a landmark. A sort of Facade for the explainer.
         :param el: DataFrame containing the element to be explained.
         :return: landmark DataFrame
         """
@@ -394,10 +407,12 @@ class Landmark(object):
             variable_cols = self.left_cols if variable_side == 'left' else self.right_cols
 
             assert fixed_side in ['left', 'right']
+
             if fixed_side == 'left':
                 fixed_cols, not_fixed_cols = self.left_cols, self.right_cols
             else:
                 fixed_cols, not_fixed_cols = self.right_cols, self.left_cols
+
             mapper_fixed = Mapper(fixed_cols, self.split_expression)
             self.fixed_data = mapper_fixed.decode_words_to_attr(mapper_fixed.encode_attr(
                 variable_el[fixed_cols]))  # encode and decode data of fixed source to ensure the same format
@@ -418,6 +433,7 @@ class Landmark(object):
             variable_data = self.mapper_variable.encode_attr(variable_el)
         else:
             assert False, f'Not a feasible configuration. variable_side: {variable_side} not allowed.'
+
         return variable_data
 
     def explanation_to_df(self, explanation, words, attribute_map, id):
@@ -602,32 +618,40 @@ class Mapper(object):
         return pd.DataFrame(res_list)
 
 
-class Evaluate_explanation(Landmark):
+class EvaluateExplanation(Landmark):
 
-    def __init__(self, impacts_df, dataset, percentage=.25, num_round=10, decision_unit_view=False,
+    def __init__(self, dataset, impacts_df, percentage=.25, num_round=10, decision_unit_view=False,
                  remove_decision_unit_only=False, **argv):
+        super().__init__(dataset=dataset, **argv)
         self.impacts_df = impacts_df
         self.percentage = percentage
         self.num_round = num_round
         self.decision_unit_view = decision_unit_view
         self.remove_decision_unit_only = remove_decision_unit_only
-        super().__init__(dataset=dataset, **argv)
+        self.impacts = list()
+        self.words_with_prefixes = list()
+        self.variable_encoded = list()
+        self.fixed_data_list = list()
+        self.fixed_data = None
+        self.batch_fixed_data = None
+        self.start_pred = None
+        self.data_list = list()
+        self.preds = None
 
-    def prepare_impacts(self, impacts_df, start_el, variable_side, fixed_side,
-                        add_before_perturbation, add_after_perturbation, overlap):
-        self.words_with_prefixes = []
-        self.impacts = []
-        self.variable_encoded = []
-        self.fixed_data_list = []
-        for id in start_el.id.unique():
-            impacts_sorted = impacts_df.query(f'id == {id}').sort_values('impact', ascending=False).reset_index(
+    def prepare_impacts(self, start_el, impacts_df, variable_side, fixed_side, add_before_perturbation,
+                        add_after_perturbation, overlap):
+        for id_ in start_el.id.unique():
+            turn_variable_encoded = None
+
+            impacts_sorted = impacts_df.query(f'id == {id_}').sort_values('impact', ascending=False).reset_index(
                 drop=True)
             self.impacts.append(impacts_sorted['impact'].values)
 
             if self.remove_decision_unit_only is True:
-                self.words_with_prefixes.append(impacts_sorted)
-                turn_vairable_encoded = impacts_sorted
-                self.fixed_data = None
+                if self.decision_unit_view:
+                    self.words_with_prefixes.append(impacts_sorted)
+                    turn_variable_encoded = impacts_sorted
+                    self.fixed_data = None
             else:
                 if self.decision_unit_view is True:
                     self.words_with_prefixes.append(
@@ -635,11 +659,11 @@ class Evaluate_explanation(Landmark):
                 else:
                     self.words_with_prefixes.append(impacts_sorted['word_prefix'].values)
 
-                turn_vairable_encoded = self.prepare_element(start_el[start_el.id == id].copy(), variable_side,
+                turn_variable_encoded = self.prepare_element(start_el[start_el.id == id_].copy(), variable_side,
                                                              fixed_side,
                                                              add_before_perturbation, add_after_perturbation, overlap)
             self.fixed_data_list.append(self.fixed_data)
-            self.variable_encoded.append(turn_vairable_encoded)
+            self.variable_encoded.append(turn_variable_encoded)
 
         if self.fixed_data_list[0] is not None:
             self.batch_fixed_data = pd.concat(self.fixed_data_list)
@@ -657,7 +681,8 @@ class Evaluate_explanation(Landmark):
         :return reconstructed pairs appending the landmark entity.
 
         """
-        df_list = []
+
+        df_list = list()
         for single_row in perturbed_strings:
             df_list.append(self.mapper_variable.decode_words_to_attr_dict(single_row))
         variable_df = pd.DataFrame.from_dict(df_list)
@@ -696,21 +721,21 @@ class Evaluate_explanation(Landmark):
                          add_before_perturbation=None,
                          add_after_perturbation=None, overlap=True, utility=False, k=5):
 
-        self.prepare_impacts(impacts_df, start_el, variable_side, fixed_side, add_before_perturbation,
+        self.prepare_impacts(start_el, impacts_df, variable_side, fixed_side, add_before_perturbation,
                              add_after_perturbation, overlap)
 
-        data_list = []
-        description_to_evaluate_list = []
+        data_list = list()
+        description_to_evaluate_list = list()
         for index, id_ in enumerate(start_el.id.unique()):
             all_comb = {}
             if utility is False:
-                turn_comb = self.get_tokens_to_remove(self.start_pred[index], self.words_with_prefixes[index],
-                                                      self.impacts[index])
+                turn_comb = get_tokens_to_remove_five(self.start_pred[index], self.impacts[index],
+                                                      self.percentage, self.num_round)
                 all_comb.update(**turn_comb)
             if utility is True or utility == 'all':
                 turn_comb = {
                     'change_class': [
-                        self.get_tokens_to_change_class(self.start_pred[index], self.impacts[index])
+                        get_tokens_to_change_class(self.start_pred[index], self.impacts[index])
                     ],
                     'single_word': [
                         [x] for x in np.arange(self.impacts[index].shape[0])
@@ -720,36 +745,35 @@ class Evaluate_explanation(Landmark):
                                                (impact > 0) == (self.start_pred[index] > .5)]
                      ],
                     'change_class_D.10': [
-                        self.get_tokens_to_change_class(self.start_pred[index], self.impacts[index], delta=.1)
+                        get_tokens_to_change_class(self.start_pred[index], self.impacts[index], delta=.1)
                     ],
                     'change_class_D.15': [
-                        self.get_tokens_to_change_class(self.start_pred[index], self.impacts[index], delta=.15)
+                        get_tokens_to_change_class(self.start_pred[index], self.impacts[index], delta=.15)
                     ]
                 }
 
                 all_comb.update(**turn_comb)
 
             if utility == 'AOPC' or utility == 'all':
-                turn_comb = self.get_tokens_to_remove_AOPC(self.start_pred[index], self.words_with_prefixes[index],
-                                                           self.impacts[index], k=k)
+                turn_comb = get_tokens_to_remove_aopc(self.impacts[index], self.num_round, k=k)
                 all_comb.update(**turn_comb)
 
             if utility == 'sufficiency' or utility == 'all':
-                turn_comb = self.get_tokens_to_remove_sufficiency(self.start_pred[index],
-                                                                  self.words_with_prefixes[index], self.impacts[index],
-                                                                  k=k)
+                turn_comb = get_tokens_to_remove_sufficiency(self.start_pred[index], self.impacts[index],
+                                                             self.num_round, k=k)
                 all_comb.update(**turn_comb)
 
             if utility == 'degradation' or utility == 'all':
-                turn_comb = self.get_tokens_to_remove_degradation(self.start_pred[index],
-                                                                  self.words_with_prefixes[index], self.impacts[index],
-                                                                  k=k)
+                turn_comb = get_tokens_to_remove_degradation(self.start_pred[index], self.impacts[index],
+                                                             self.num_round)
                 all_comb.update(**turn_comb)
 
             if utility == 'single_units' or utility == 'all':
-                turn_comb = self.get_tokens_to_remove_single_units(self.start_pred[index],
-                                                                   self.words_with_prefixes[index], self.impacts[index],
-                                                                   k=k)
+                turn_comb = get_tokens_to_remove_single_units(self.impacts[index])
+                all_comb.update(**turn_comb)
+
+            if utility == 'incremental' or utility == 'all':
+                turn_comb = get_tokens_to_remove_incrementally(self.impacts[index], limit=k)
                 all_comb.update(**turn_comb)
 
             res = self.generate_descriptions(all_comb, self.words_with_prefixes[index], self.variable_encoded[index])
@@ -760,7 +784,7 @@ class Evaluate_explanation(Landmark):
 
         if self.fixed_data_list[0] is not None:
             self.batch_fixed_data = pd.concat(
-                [self.fixed_data_list[i] for i, x in enumerate(description_to_evaluate_list) for l in range(len(x))])
+                [self.fixed_data_list[i] for i, x in enumerate(description_to_evaluate_list) for _ in range(len(x))])
         else:
             self.batch_fixed_data = None
         all_descriptions = np.concatenate(description_to_evaluate_list)
@@ -803,92 +827,6 @@ class Evaluate_explanation(Landmark):
 
         return res_list
 
-    def get_tokens_to_remove(self, start_pred, tokens_sorted, impacts_sorted):
-        if len(impacts_sorted) >= 5:
-            combination = {'firts1': [[0]], 'first2': [[0, 1]], 'first5': [[0, 1, 2, 3, 4]]}
-        else:
-            combination = {'firts1': [[0]]}
-
-        tokens_to_remove = self.get_tokens_to_change_class(start_pred, impacts_sorted)
-        combination['change_class'] = [tokens_to_remove]
-        lent = len(impacts_sorted)
-        ntokens = int(lent * self.percentage)
-        np.random.seed(0)
-        combination['random'] = [np.random.choice(lent, ntokens, ) for _ in range(self.num_round)]
-        return combination
-
-    def get_tokens_to_change_class(self, start_pred, impacts_sorted, delta: float = 0.0):
-        tokens_to_remove = []
-        positive_match = start_pred > .5
-        # delta = -delta if not positive else delta
-        index = np.arange(0, len(impacts_sorted))
-
-        if not positive_match:
-            index = index[::-1]  # start removing negative impacts to push the score towards match if not positive
-
-        delta_score_to_achieve = abs(start_pred - 0.5) + delta
-        current_delta_score = 0
-
-        for i in index:
-            current_token_impact = impacts_sorted[i] * (1 if positive_match else -1)
-            # remove positive impact if element is match, neg impacts if no match
-            if current_token_impact > 0:
-                tokens_to_remove.append(i)
-                current_delta_score += current_token_impact
-            else:  # there are no more tokens with positive (negative) impacts
-                break
-
-            # expected_delta = np.abs(np.sum(impacts_sorted[tokens_to_remove]))
-
-            if current_delta_score >= delta_score_to_achieve:
-                break
-
-        return tokens_to_remove
-
-    def get_tokens_to_remove_AOPC(self, start_pred, tokens_sorted, impacts_sorted, k=10):
-        min_tokens = min(len(impacts_sorted), k)
-        combination = {f'MoRF_{i}': [np.arange(i)] for i in range(1, min_tokens + 1)}
-        np.random.seed(0)
-        lent = len(impacts_sorted)
-        for turn_n_tokens in range(1, min_tokens + 1):
-            combination[f'random_{turn_n_tokens}'] = [np.random.choice(lent, turn_n_tokens, replace=False) for _ in
-                                                      range(self.num_round)]
-        return combination
-
-    def get_tokens_to_remove_degradation(self, start_pred, tokens_sorted, impacts_sorted, k=100, random=False):
-        lent = len(impacts_sorted)
-        min_tokens = lent
-        if start_pred > .5:
-            combination = {f'MoRF_{i}': [np.arange(i)] for i in range(1, min_tokens + 1)}
-            combination.update(**{f'LeRF_{i}': [np.arange(lent - i, lent)] for i in range(1, min_tokens + 1)})
-        else:
-            combination = {f'MoRF_{i}': [np.arange(lent - i, lent)] for i in range(1, min_tokens + 1)}
-            combination.update(**{f'LeRF_{i}': [np.arange(i)] for i in range(1, min_tokens + 1)})
-        np.random.seed(0)
-        if random is True:
-            for turn_n_tokens in range(1, min_tokens + 1):
-                combination[f'random_{turn_n_tokens}'] = [np.random.choice(lent, turn_n_tokens, replace=False) for _ in
-                                                          range(self.num_round)]
-        return combination
-
-    def get_tokens_to_remove_sufficiency(self, start_pred, tokens_sorted, impacts_sorted, k=10):
-        lent = len(impacts_sorted)
-        min_tokens = min(lent, k)
-        if start_pred > .5:
-            combination = {f'top_{i}': [np.arange(i, lent)] for i in range(1, min_tokens + 1)}
-        else:
-            combination = {f'top_{i}': [np.arange(lent - i)] for i in range(1, min_tokens + 1)}
-        np.random.seed(0)
-        for turn_n_tokens in range(1, min_tokens + 1):
-            combination[f'random_{turn_n_tokens}'] = [
-                np.setdiff1d(np.arange(lent), np.random.choice(lent, turn_n_tokens, replace=False)) for _ in
-                range(self.num_round)]
-        return combination
-
-    def get_tokens_to_remove_single_units(self, start_pred, tokens_sorted, impacts_sorted, k=10):
-        lent = len(impacts_sorted)
-        combination = {f'unit_{i}': [[i]] for i in range(lent)}
-        return combination
 
     def evaluate_set(self, ids, conf_name, variable_side='left', fixed_side='right', add_before_perturbation=None,
                      add_after_perturbation=None, overlap=True, utility=False):
@@ -983,8 +921,8 @@ conf_code_map = {'all': 'all',
 
 def evaluate_explanation_positive(impacts_match, explainer, num_round=25, utility=False):
     evaluation_res = {}
-    ev = Evaluate_explanation(impacts_match, explainer.dataset, predict_method=explainer.model_predict,
-                              exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+    ev = EvaluateExplanation(impacts_match, explainer.dataset, predict_method=explainer.model_predict,
+                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
 
     ids = impacts_match.query('conf =="LIME"').id.unique()
 
@@ -1022,8 +960,8 @@ def evaluate_explanation_negative(impacts, explainer, num_round=25, utility=Fals
     evaluation_res = {}
 
     ids = impacts.query('conf =="LIME"').id.unique()
-    ev = Evaluate_explanation(impacts, explainer.dataset, predict_method=explainer.model_predict,
-                              exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+    ev = EvaluateExplanation(impacts, explainer.dataset, predict_method=explainer.model_predict,
+                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
 
     conf_name = 'LIME'
     res_df = ev.evaluate_set(ids, conf_name, variable_side='all', utility=utility)

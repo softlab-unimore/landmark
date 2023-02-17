@@ -1,2 +1,2 @@
-from landmark.landmark import Landmark
-from landmark.landmark.plot import PlotExplanation
+from .landmark.landmark import Landmark
+from .landmark.plot import PlotExplanation
