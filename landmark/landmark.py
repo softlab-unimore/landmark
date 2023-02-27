@@ -112,7 +112,7 @@ class Landmark(object):
                                              add_after_perturbation, overlap)
 
         words = self.splitter.split(variable_data)
-        explanation = self.explainer.explain_instance(variable_data, self.restucture_and_predict,
+        explanation = self.explainer.explain_instance(variable_data, self.restructure_and_predict,
                                                       num_features=len(words), num_samples=num_samples,
                                                       **argv)
         self.variable_data = variable_data  # to test the addition before perturbation
@@ -226,9 +226,9 @@ class Landmark(object):
                 continue
             el[col_dst] = el[col_dst].astype(str) + ' ' + ' '.join(tokens_to_add[col_src])
 
-    def restucture_and_predict(self, perturbed_strings):
+    def restructure_and_predict(self, perturbed_strings):
         """
-            Restructure the perturbed strings from LIME and return the related predictions.
+            Restructure the perturbed strings from the perturbation system and return the related predictions.
         """
         non_null_rows = np.array([True] * len(perturbed_strings))
         self.tmp_dataset = self.restructure_strings(perturbed_strings)

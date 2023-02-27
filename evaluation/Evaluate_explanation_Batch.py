@@ -194,7 +194,7 @@ class Evaluate_explanation(Landmark):
         # if variable_side == 'left' and add_before_perturbation is not None:
         #     assert False
 
-        self.start_pred = self.restucture_and_predict(self.variable_encoded)[:, 1]  # match_score
+        self.start_pred = self.restructure_and_predict(self.variable_encoded)[:, 1]  # match_score
 
     def restructure_strings(self, perturbed_strings):
         """
@@ -296,7 +296,7 @@ class Evaluate_explanation(Landmark):
         else:
             self.batch_fixed_data = None
         all_descriptions = np.concatenate(description_to_evaluate_list)
-        preds = self.restucture_and_predict(all_descriptions)[:, 1]
+        preds = self.restructure_and_predict(all_descriptions)[:, 1]
         assert len(preds) == len(all_descriptions)
         splitted_preds = []
         start_idx = 0
