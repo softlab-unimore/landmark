@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import torch
-from lime.lime_text import LimeTextExplainer
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve, auc
 from tqdm.notebook import tqdm
+
+from ..landmark.landmark import Landmark, Mapper
 
 from .removal_strategies import get_tokens_to_remove_five, get_tokens_to_remove_incrementally, \
     get_tokens_to_remove_aopc, get_tokens_to_remove_degradation, get_tokens_to_remove_sufficiency, \
@@ -94,7 +95,7 @@ def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', '
         side_word_relevance_prefix['word_prefix'] = side_word_relevance_prefix[side + '_word_prefixes']
         side_word_relevance_prefix = side_word_relevance_prefix.query(f'{side}_word != "[UNP]"')
         ev = EvaluateExplanation(side_word_relevance_prefix, evaluation_df, predict_method=predictor,
-                                 exclude_attrs=exclude_attrs, percentage=.25, num_round=3)
+                                 exclude_attrs=exclude_attrs, percentage=.25, num_rounds=3)
 
         fixed_side = 'right' if side == 'left' else 'left'
         res_df = ev.evaluate_set(df_to_process.id.values, 'bert', variable_side=side, fixed_side=fixed_side,
@@ -272,362 +273,25 @@ def token_remotion_delta_performance(df, y_true, word_relevance, predictor, k_li
     return pd.DataFrame(res_list)
 
 
-class Landmark(object):
-
-    def __init__(self, predict_method, dataset, exclude_attrs=('id', 'label'), split_expression=' ',
-                 lprefix='left_', rprefix='right_', **argv):
-        """
-        :param predict_method: of the model to be explained
-        :param dataset: containing the elements that will be explained. Used to save the attribute structure.
-        :param exclude_attrs: attributes to be excluded from the explanations
-        :param split_expression: to divide tokens from string
-        :param lprefix: left prefix
-        :param rprefix: right prefix
-        :param argv: other optional parameters that will be passed to LIME
-        """
-        self.splitter = re.compile(split_expression)
-        self.split_expression = split_expression
-        self.explainer = LimeTextExplainer(class_names=['NO match', 'MATCH'], split_expression=split_expression, **argv)
-        self.model_predict = predict_method
-        self.dataset = dataset
-        self.lprefix = lprefix
-        self.rprefix = rprefix
-        self.exclude_attrs = exclude_attrs
-
-        self.cols = [x for x in dataset.columns if x not in exclude_attrs]
-        self.left_cols = [x for x in self.cols if x.startswith(self.lprefix)]
-        self.right_cols = [x for x in self.cols if x.startswith(self.rprefix)]
-        self.cols = self.left_cols + self.right_cols
-        self.explanations = {}
-
-        self.add_after_perturbation = None
-        self.overlap = None
-        self.mapper_variable = None
-        self.fixed_data = None
-        self.fixed_side = str()
-
-    def explain(self, elements, conf='auto', num_samples=500, verbose=False, **argv):
-        """
-        User interface to generate an explanations with the specified configurations for the elements passed in input.
-        """
-        assert type(elements) == pd.DataFrame, f'elements must be of type {pd.DataFrame}'
-        allowed_conf = ['auto', 'single', 'double', 'LIME']
-        assert conf in allowed_conf, 'conf must be in ' + repr(allowed_conf)
-        if elements.shape[0] == 0:
-            return None
-
-        if 'auto' == conf:
-            match_elements = elements[elements.label == 1]
-            no_match_elements = elements[elements.label == 0]
-            match_explanation = self.explain(match_elements, 'single', num_samples, **argv)
-            no_match_explanation = self.explain(no_match_elements, 'double', num_samples, **argv)
-            return pd.concat([match_explanation, no_match_explanation])
-
-        to_cycle = tqdm(range(elements.shape[0])) if verbose else range(elements.shape[0])
-        impact_list = []
-        if 'LIME' == conf:
-            for idx in to_cycle:
-                impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side='',
-                                                num_samples=num_samples, **argv)
-                impacts['conf'] = 'LIME'
-                impact_list.append(impacts)
-            self.impacts = pd.concat(impact_list)
-            return self.impacts
-
-        landmark = 'right'
-        variable = 'left'
-        overlap = False
-        if 'single' == conf:
-            add_before = None
-        elif 'double' == conf:
-            add_before = landmark
-        else:
-            raise ValueError
-
-        # right landmark
-        for idx in to_cycle:
-            impacts = self.explain_instance(elements.iloc[[idx]], variable_side=variable, fixed_side=landmark,
-                                            add_before_perturbation=add_before, num_samples=num_samples,
-                                            overlap=overlap, **argv)
-            impacts['conf'] = f'{landmark}_landmark' + ('_injection' if add_before is not None else '')
-            impact_list.append(impacts)
-
-        # switch sides
-        landmark, variable = variable, landmark
-        if add_before is not None:
-            add_before = landmark
-
-        # left landmark
-        for idx in to_cycle:
-            impacts = self.explain_instance(elements.iloc[[idx]], variable_side=variable, fixed_side=landmark,
-                                            add_before_perturbation=add_before, num_samples=num_samples,
-                                            overlap=overlap, **argv)
-            impacts['conf'] = f'{landmark}_landmark' + ('_injection' if add_before is not None else '')
-            impact_list.append(impacts)
-
-        self.impacts = pd.concat(impact_list)
-        return self.impacts
-
-    def explain_instance(self, el, variable_side='left', fixed_side='right', add_before_perturbation=None,
-                         add_after_perturbation=None, overlap=True, num_samples=500, **argv):
-        """
-        Main method to wrap the explainer and generate a landmark. A sort of Facade for the explainer.
-        :param el: DataFrame containing the element to be explained.
-        :return: landmark DataFrame
-        """
-        variable_el = el.copy()
-        for col in self.cols:
-            variable_el[col] = ' '.join(re.split(r' +', str(variable_el[col].values[0]).strip()))
-
-        variable_data = self.prepare_element(variable_el, variable_side, fixed_side, add_before_perturbation,
-                                             add_after_perturbation, overlap)
-
-        words = self.splitter.split(variable_data)
-        explanation = self.explainer.explain_instance(variable_data, self.restucture_and_predict,
-                                                      num_features=len(words), num_samples=num_samples,
-                                                      **argv)
-        self.variable_data = variable_data  # to test the addition before perturbation
-
-        id = el.id.values[0]  # Assume index is the id column
-        self.explanations[f'{self.fixed_side}{id}'] = explanation
-        return self.explanation_to_df(explanation, words, self.mapper_variable.attr_map, id)
-
-    def prepare_element(self, variable_el, variable_side, fixed_side, add_before_perturbation, add_after_perturbation,
-                        overlap):
-        """
-        Compute the data and set parameters needed to perform the landmark.
-            Set fixed_side, fixed_data, mapper_variable.
-            Call compute_tokens if needed
-        """
-
-        self.add_after_perturbation = add_after_perturbation
-        self.overlap = overlap
-        self.fixed_side = fixed_side
-        if variable_side in ['left', 'right']:
-            variable_cols = self.left_cols if variable_side == 'left' else self.right_cols
-
-            assert fixed_side in ['left', 'right']
-
-            if fixed_side == 'left':
-                fixed_cols, not_fixed_cols = self.left_cols, self.right_cols
-            else:
-                fixed_cols, not_fixed_cols = self.right_cols, self.left_cols
-
-            mapper_fixed = Mapper(fixed_cols, self.split_expression)
-            self.fixed_data = mapper_fixed.decode_words_to_attr(mapper_fixed.encode_attr(
-                variable_el[fixed_cols]))  # encode and decode data of fixed source to ensure the same format
-            self.mapper_variable = Mapper(not_fixed_cols, self.split_expression)
-
-            if add_before_perturbation is not None or add_after_perturbation is not None:
-                self.compute_tokens(variable_el)
-                if add_before_perturbation is not None:
-                    self.add_tokens(variable_el, variable_cols, add_before_perturbation, overlap)
-            variable_data = Mapper(variable_cols, self.split_expression).encode_attr(variable_el)
-
-        elif variable_side == 'all':
-            variable_cols = self.left_cols + self.right_cols
-
-            self.mapper_variable = Mapper(variable_cols, self.split_expression)
-            self.fixed_data = None
-            self.fixed_side = 'all'
-            variable_data = self.mapper_variable.encode_attr(variable_el)
-        else:
-            assert False, f'Not a feasible configuration. variable_side: {variable_side} not allowed.'
-
-        return variable_data
-
-    def explanation_to_df(self, explanation, words, attribute_map, id):
-        """
-        Generate the DataFrame of the landmark from the LIME landmark.
-        :param explanation: LIME landmark
-        :param words: words of the element subject of the landmark
-        :param attribute_map: attribute map to decode the attribute from a prefix
-        :param id: id of the element under landmark
-        :return: DataFrame containing the landmark
-        """
-        impacts_list = []
-        dict_impact = {'id': id}
-        for wordpos, impact in explanation.as_map()[1]:
-            word = words[wordpos]
-            dict_impact.update(column=attribute_map[word[0]], position=int(word[1:3]), word=word[4:], word_prefix=word,
-                               impact=impact)
-            impacts_list.append(dict_impact.copy())
-        return pd.DataFrame(impacts_list).reset_index()
-
-    def compute_tokens(self, el):
-        """
-        Divide tokens of the descriptions for each column pair in inclusive and exclusive sets.
-        :param el: pd.DataFrame containing the 2 description to analyze
-        """
-        tokens = {col: np.array(self.splitter.split(str(el[col].values[0]))) for col in self.cols}
-        tokens_intersection = {}
-        tokens_not_overlapped = {}
-        for col in [col.replace('left_', '') for col in self.left_cols]:
-            lcol, rcol = self.lprefix + col, self.rprefix + col
-            tokens_intersection[col] = np.intersect1d(tokens[lcol], tokens[rcol])
-            tokens_not_overlapped[lcol] = tokens[lcol][~ np.in1d(tokens[lcol], tokens_intersection[col])]
-            tokens_not_overlapped[rcol] = tokens[rcol][~ np.in1d(tokens[rcol], tokens_intersection[col])]
-        self.tokens_not_overlapped = tokens_not_overlapped
-        self.tokens_intersection = tokens_intersection
-        self.tokens = tokens
-        return dict(tokens=tokens, tokens_intersection=tokens_intersection, tokens_not_overlapped=tokens_not_overlapped)
-
-    def add_tokens(self, el, dst_columns, src_side, overlap=True):
-        """
-        Takes tokens computed before from the src_sside with overlap or not
-        and inject them into el in columns specified in dst_columns.
-        """
-        if not overlap:
-            tokens_to_add = self.tokens_not_overlapped
-        else:
-            tokens_to_add = self.tokens
-
-        if src_side == 'left':
-            src_columns = self.left_cols
-        elif src_side == 'right':
-            src_columns = self.right_cols
-        else:
-            assert False, f'src_side must "left" or "right". Got {src_side}'
-
-        for col_dst, col_src in zip(dst_columns, src_columns):
-            if len(tokens_to_add[col_src]) == 0:
-                continue
-            el[col_dst] = el[col_dst].astype(str) + ' ' + ' '.join(tokens_to_add[col_src])
-
-    def restucture_and_predict(self, perturbed_strings):
-        """
-            Restructure the perturbed strings from LIME and return the related predictions.
-        """
-        non_null_rows = np.array([True] * len(perturbed_strings))
-        if self.remove_decision_unit_only is True:
-            for i, value in enumerate(perturbed_strings):
-                if value.empty:
-                    non_null_rows[i] = False
-                else:
-                    value['id'] = i
-            self.tmp_dataset = pd.concat(perturbed_strings)
-
-        else:
-            self.tmp_dataset = self.restructure_strings(perturbed_strings)
-            self.tmp_dataset.reset_index(inplace=True, drop=True)
-        ret = np.ndarray(shape=(len(perturbed_strings), 2))
-        ret[:, :] = 0.5
-        predictions = self.model_predict(self.tmp_dataset)
-        # assert len(perturbed_strings) == len(predictions), f'df and predictions shape are misaligned'
-
-        ret[non_null_rows, 1] = np.array(predictions)
-        ret[:, 0] = 1 - ret[:, 1]
-        return ret
-
-    def restructure_strings(self, perturbed_strings):
-        """
-        Decode :param perturbed_strings into DataFrame and
-        :return reconstructed pairs appending the landmark entity.
-        """
-        df_list = []
-        for single_row in perturbed_strings:
-            df_list.append(self.mapper_variable.decode_words_to_attr_dict(single_row))
-        variable_df = pd.DataFrame.from_dict(df_list)
-        if self.add_after_perturbation is not None:
-            self.add_tokens(variable_df, variable_df.columns, self.add_after_perturbation, overlap=self.overlap)
-        if self.fixed_data is not None:
-            fixed_df = pd.concat([self.fixed_data] * variable_df.shape[0])
-            fixed_df.reset_index(inplace=True, drop=True)
-        else:
-            fixed_df = None
-        return pd.concat([variable_df, fixed_df], axis=1)
-
-    def double_explanation_conversion(self, explanation_df, item):
-        """
-        Compute and assign the original attribute of injected words.
-        :return: explanation with original attribute for injected words.
-        """
-        view = explanation_df[['column', 'position', 'word', 'impact']].reset_index(drop=True)
-        tokens_divided = self.compute_tokens(item)
-        exchanged_idx = [False] * len(view)
-        lengths = {col: len(words) for col, words in tokens_divided['tokens'].items()}
-        for col, words in tokens_divided['tokens_not_overlapped'].items():  # words injected in the opposite side
-            prefix, col_name = col.split('_')
-            prefix = 'left_' if prefix == 'right' else 'right_'
-            opposite_col = prefix + col_name
-            exchanged_idx = exchanged_idx | ((view.position >= lengths[opposite_col]) & (view.column == opposite_col))
-        exchanged = view[exchanged_idx]
-        view = view[~exchanged_idx]
-        # determine injected impacts
-        exchanged['side'] = exchanged['column'].apply(lambda x: x.split('_')[0])
-        col_names = exchanged['column'].apply(lambda x: x.split('_')[1])
-        exchanged['column'] = np.where(exchanged['side'] == 'left', 'right_', 'left_') + col_names
-        tmp = view.merge(exchanged, on=['word', 'column'], how='left', suffixes=('', '_injected'))
-        tmp = tmp.drop_duplicates(['column', 'word', 'position'], keep='first')
-        impacts_injected = tmp['impact_injected']
-        impacts_injected = impacts_injected.fillna(0)
-
-        view['score_right_landmark'] = np.where(view['column'].str.startswith('left'), view['impact'], impacts_injected)
-        view['score_left_landmark'] = np.where(view['column'].str.startswith('right'), view['impact'], impacts_injected)
-        view.drop('impact', 1, inplace=True)
-
-        return view
-
-    # def plot(self, explanation, el, figsize=(16, 6)):
-    #     exp_double = self.double_explanation_conversion(explanation, el)
-    #     PlotExplanation.plot(exp_double, figsize)
-
-
-class Mapper(object):
-    """
-    This class is useful to encode a row of a dataframe in a string in which a prefix
-    is added to each word to keep track of its attribute and its position.
-    """
-
-    def __init__(self, columns, split_expression):
-        self.columns = columns
-        self.attr_map = {chr(ord('A') + colidx): col for colidx, col in enumerate(self.columns)}
-        self.arange = np.arange(100)
-        self.split_expression = split_expression
-
-    def decode_words_to_attr_dict(self, text_to_restructure):
-        res = re.findall(r'(?P<attr>[A-Z]{1})(?P<pos>[0-9]{2})_(?P<word>[^' + self.split_expression + ']+)',
-                         text_to_restructure)
-        structured_row = {col: '' for col in self.columns}
-        for col_code, pos, word in res:
-            structured_row[self.attr_map[col_code]] += word + ' '
-        for col in self.columns:  # Remove last space
-            structured_row[col] = structured_row[col][:-1]
-        return structured_row
-
-    def decode_words_to_attr(self, text_to_restructure):
-        return pd.DataFrame([self.decode_words_to_attr_dict(text_to_restructure)])
-
-    def encode_attr(self, el):
-        return ' '.join(
-            [chr(ord('A') + colpos) + "{:02d}_".format(wordpos) + word for colpos, col in enumerate(self.columns) for
-             wordpos, word in enumerate(re.split(self.split_expression, str(el[col].values[0])))])
-
-    def encode_elements(self, elements):
-        word_dict = {}
-        res_list = []
-        for i in np.arange(elements.shape[0]):
-            el = elements.iloc[i]
-            word_dict.update(id=el.id)
-            for colpos, col in enumerate(self.columns):
-                word_dict.update(column=col)
-                for wordpos, word in enumerate(re.split(self.split_expression, str(el[col]))):
-                    word_dict.update(word=word, position=wordpos,
-                                     word_prefix=chr(ord('A') + colpos) + f"{wordpos:02d}_" + word)
-                    res_list.append(word_dict.copy())
-        return pd.DataFrame(res_list)
-
-
 class EvaluateExplanation(Landmark):
 
-    def __init__(self, dataset, impacts_df, percentage=.25, num_round=10, decision_unit_view=False,
-                 remove_decision_unit_only=False, **argv):
+    def __init__(self, dataset, impacts_df, percentage=.25, num_rounds=10, evaluate_removing_du=False,
+                 recompute_embeddings=True, **argv):
+        """
+        Args:
+            evaluate_removing_du: specific parameter for WYM: evaluate Decision Units impacts instead of removing
+            single tokens.
+            recompute_embeddings: specific parameter for WYM: recompute embeddings after removal of Decision Units or
+            single tokens. This parameter must be True if evaluate_removing_du is False.
+        """
+
         super().__init__(dataset=dataset, **argv)
+        self.tmp_dataset = None
         self.impacts_df = impacts_df
         self.percentage = percentage
-        self.num_round = num_round
-        self.decision_unit_view = decision_unit_view
-        self.remove_decision_unit_only = remove_decision_unit_only
+        self.num_rounds = num_rounds
+        self.evaluate_removing_du = evaluate_removing_du  # was decision_unit_view, default False
+        self.recompute_embeddings = recompute_embeddings  # was remove_decision_unit_only, default False
         self.impacts = list()
         self.words_with_prefixes = list()
         self.variable_encoded = list()
@@ -647,21 +311,23 @@ class EvaluateExplanation(Landmark):
                 drop=True)
             self.impacts.append(impacts_sorted['impact'].values)
 
-            if self.remove_decision_unit_only is True:
-                if self.decision_unit_view:
-                    self.words_with_prefixes.append(impacts_sorted)
-                    turn_variable_encoded = impacts_sorted
-                    self.fixed_data = None
-            else:
-                if self.decision_unit_view is True:
+            if self.recompute_embeddings:
+                if self.evaluate_removing_du:
                     self.words_with_prefixes.append(
                         [impacts_sorted['left_word_prefixes'].values, impacts_sorted['right_word_prefixes'].values])
                 else:
                     self.words_with_prefixes.append(impacts_sorted['word_prefix'].values)
 
                 turn_variable_encoded = self.prepare_element(start_el[start_el.id == id_].copy(), variable_side,
-                                                             fixed_side,
-                                                             add_before_perturbation, add_after_perturbation, overlap)
+                                                             fixed_side, add_before_perturbation,
+                                                             add_after_perturbation, overlap)
+            else:
+                if self.evaluate_removing_du:
+                    self.words_with_prefixes.append(impacts_sorted)
+                    turn_variable_encoded = impacts_sorted
+                    self.fixed_data = None
+                # else: instance class state is invalid, managed in init
+
             self.fixed_data_list.append(self.fixed_data)
             self.variable_encoded.append(turn_variable_encoded)
 
@@ -669,10 +335,8 @@ class EvaluateExplanation(Landmark):
             self.batch_fixed_data = pd.concat(self.fixed_data_list)
         else:
             self.batch_fixed_data = None
-        # if variable_side == 'left' and add_before_perturbation is not None:
-        #     assert False
 
-        self.start_pred = self.restucture_and_predict(self.variable_encoded)[:, 1]  # match_score
+        self.start_pred = self.restructure_and_predict(self.variable_encoded)[:, 1]  # match_score
 
     def restructure_strings(self, perturbed_strings):
         """
@@ -695,6 +359,34 @@ class EvaluateExplanation(Landmark):
             fixed_df = None
         return pd.concat([variable_df, fixed_df], axis=1)
 
+    def restructure_and_predict(self, perturbed_strings):
+        """
+            Restructure the perturbed strings from the perturbation system and return the related predictions.
+        """
+        non_null_rows = np.array([True] * len(perturbed_strings))
+        
+        if self.recompute_embeddings:
+            self.tmp_dataset = self.restructure_strings(perturbed_strings)
+            self.tmp_dataset.reset_index(inplace=True, drop=True)
+        
+        else:
+            for i, value in enumerate(perturbed_strings):
+                if value.empty:
+                    non_null_rows[i] = False
+                else:
+                    value['id'] = i
+            self.tmp_dataset = pd.concat(perturbed_strings)
+            
+        ret = np.ndarray(shape=(len(perturbed_strings), 2))
+        ret[:, :] = 0.5
+        predictions = self.model_predict(self.tmp_dataset)
+        # assert len(perturbed_strings) == len(predictions), f'df and predictions shape are misaligned'
+
+        ret[non_null_rows, 1] = np.array(predictions)
+        ret[:, 0] = 1 - ret[:, 1]
+        return ret
+
+
     def generate_descriptions(self, combinations_to_remove, words_with_prefixes, variable_encoded):
         description_to_evaluate = []
         comb_name_sequence = []
@@ -702,8 +394,8 @@ class EvaluateExplanation(Landmark):
         for comb_name, combinations in combinations_to_remove.items():
             for tokens_to_remove in combinations:
                 tmp_encoded = variable_encoded
-                if self.decision_unit_view:  # remove both tokens of left and right as a united view without landmark
-                    if self.remove_decision_unit_only:
+                if self.evaluate_removing_du:  # remove both tokens of left and right as a united view without landmark
+                    if not self.recompute_embeddings:
                         tmp_encoded = tmp_encoded.drop(tokens_to_remove)
                     else:
                         for turn_word_with_prefixes in words_with_prefixes:
@@ -730,7 +422,7 @@ class EvaluateExplanation(Landmark):
             all_comb = {}
             if utility is False:
                 turn_comb = get_tokens_to_remove_five(self.start_pred[index], self.impacts[index],
-                                                      self.percentage, self.num_round)
+                                                      self.percentage, self.num_rounds)
                 all_comb.update(**turn_comb)
             if utility is True or utility == 'all':
                 turn_comb = {
@@ -755,17 +447,17 @@ class EvaluateExplanation(Landmark):
                 all_comb.update(**turn_comb)
 
             if utility == 'AOPC' or utility == 'all':
-                turn_comb = get_tokens_to_remove_aopc(self.impacts[index], self.num_round, k=k)
+                turn_comb = get_tokens_to_remove_aopc(self.impacts[index], self.num_rounds, k=k)
                 all_comb.update(**turn_comb)
 
             if utility == 'sufficiency' or utility == 'all':
                 turn_comb = get_tokens_to_remove_sufficiency(self.start_pred[index], self.impacts[index],
-                                                             self.num_round, k=k)
+                                                             self.num_rounds, k=k)
                 all_comb.update(**turn_comb)
 
             if utility == 'degradation' or utility == 'all':
                 turn_comb = get_tokens_to_remove_degradation(self.start_pred[index], self.impacts[index],
-                                                             self.num_round)
+                                                             self.num_rounds)
                 all_comb.update(**turn_comb)
 
             if utility == 'single_units' or utility == 'all':
@@ -788,7 +480,7 @@ class EvaluateExplanation(Landmark):
         else:
             self.batch_fixed_data = None
         all_descriptions = np.concatenate(description_to_evaluate_list)
-        preds = self.restucture_and_predict(all_descriptions)[:, 1]
+        preds = self.restructure_and_predict(all_descriptions)[:, 1]
         assert len(preds) == len(all_descriptions)
         splitted_preds = []
         start_idx = 0
@@ -813,8 +505,8 @@ class EvaluateExplanation(Landmark):
                                   num_tokens=impacts.shape[0]
                                   )
 
-                if self.decision_unit_view is True:
-                    if self.remove_decision_unit_only is True:
+                if self.evaluate_removing_du:
+                    if not self.recompute_embeddings:
                         evaluation.update(tokens_removed=words_with_prefixes.loc[
                             tokens_to_remove, ['left_word_prefixes', 'right_word_prefixes']].values.tolist())
                     else:
@@ -922,7 +614,7 @@ conf_code_map = {'all': 'all',
 def evaluate_explanation_positive(impacts_match, explainer, num_round=25, utility=False):
     evaluation_res = {}
     ev = EvaluateExplanation(impacts_match, explainer.dataset, predict_method=explainer.model_predict,
-                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_rounds=num_round)
 
     ids = impacts_match.query('conf =="LIME"').id.unique()
 
@@ -961,7 +653,7 @@ def evaluate_explanation_negative(impacts, explainer, num_round=25, utility=Fals
 
     ids = impacts.query('conf =="LIME"').id.unique()
     ev = EvaluateExplanation(impacts, explainer.dataset, predict_method=explainer.model_predict,
-                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+                             exclude_attrs=explainer.exclude_attrs, percentage=.25, num_rounds=num_round)
 
     conf_name = 'LIME'
     res_df = ev.evaluate_set(ids, conf_name, variable_side='all', utility=utility)
