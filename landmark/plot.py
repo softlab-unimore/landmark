@@ -181,12 +181,6 @@ class PlotExplanation:
             </tr>
         """
         for _, row in data_df.iterrows():
-            # left_attributes = [row[attribute] for attribute in row.keys() if attribute.startswith('left_')
-            #                    and not 'description' in attribute]
-            # right_attributes = [row[attribute] for attribute in row.keys() if attribute.startswith('right_')
-            #                     and not 'description' in attribute]
-
-
             html_page += f"""
                 <tr class='tr1'>
                     <td class='entity1'>
