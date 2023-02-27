@@ -90,8 +90,8 @@ def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=['id', '
     side_word_relevance_prefix = word_relevance_prefix.copy()
     # side_word_relevance_prefix['word_prefix'] = side_word_relevance_prefix[side + '_word_prefixes']
     # side_word_relevance_prefix = side_word_relevance_prefix.query(f'{side}_word != "[UNP]"')
-    ev = Evaluate_explanation(side_word_relevance_prefix, evaluation_df, predict_method=predictor,
-                              exclude_attrs=exclude_attrs, percentage=.25, num_round=3)
+    ev = Evaluate_explanation(evaluation_df, side_word_relevance_prefix, percentage=.25, num_round=3,
+                              predict_method=predictor, exclude_attrs=exclude_attrs)
 
     # fixed_side = 'right' if side == 'left' else 'left'
     res_df = ev.evaluate_set(df_to_process.id.values, 'bert', variable_side='all', fixed_side='all',
@@ -145,12 +145,12 @@ def correlation_vs_landmark(df, word_relevance, predictor, match_ids, no_match_i
                 res_list_of_dict.append(res_dict.copy())
     return pd.DataFrame(res_list_of_dict)
 
-from landmark.landmark import Landmark
+
 
 
 class Evaluate_explanation(Landmark):
 
-    def __init__(self, impacts_df, dataset, percentage=.25, num_round=10, decision_unit_view=False,
+    def __init__(self, dataset, impacts_df, percentage=.25, num_round=10, decision_unit_view=False,
                  remove_decision_unit_only=False, **argv):
         self.impacts_df = impacts_df
         self.percentage = percentage
@@ -500,8 +500,8 @@ class Evaluate_explanation(Landmark):
 
 def evaluate_explanation_positive(impacts_match, explainer, num_round=25, utility=False):
     evaluation_res = {}
-    ev = Evaluate_explanation(impacts_match, explainer.dataset, predict_method=explainer.model_predict,
-                              exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+    ev = Evaluate_explanation(explainer.dataset, impacts_match, percentage=.25, num_round=num_round,
+                              predict_method=explainer.model_predict, exclude_attrs=explainer.exclude_attrs)
 
     ids = impacts_match.query('conf =="LIME"').id.unique()
 
@@ -539,8 +539,8 @@ def evaluate_explanation_negative(impacts, explainer, num_round=25, utility=Fals
     evaluation_res = {}
 
     ids = impacts.query('conf =="LIME"').id.unique()
-    ev = Evaluate_explanation(impacts, explainer.dataset, predict_method=explainer.model_predict,
-                              exclude_attrs=explainer.exclude_attrs, percentage=.25, num_round=num_round)
+    ev = Evaluate_explanation(explainer.dataset, impacts, percentage=.25, num_round=num_round,
+                              predict_method=explainer.model_predict, exclude_attrs=explainer.exclude_attrs)
 
     conf_name = 'LIME'
     res_df = ev.evaluate_set(ids, conf_name, variable_side='all', utility=utility)

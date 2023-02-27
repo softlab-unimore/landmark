@@ -162,8 +162,8 @@ def compute_explanations_lemon(mirror_elements=False, redo=False, num_explanatio
                 exp_df = turn_data_dict[name]
                 exp_df['conf'] = conf_name
                 ids = sample['id'].unique()
-                ev = Evaluate_explanation(exp_df, sample, predict_method=ditto_pred_proba,
-                                          exclude_attrs=exclude_attrs, percentage=.25, num_round=num_round)
+                ev = Evaluate_explanation(sample, exp_df, percentage=.25, num_round=num_round,
+                                          predict_method=ditto_pred_proba, exclude_attrs=exclude_attrs)
                 ev.variable_cols = np.setdiff1d(sample.columns, exclude_attrs + ['label'])
 
 
