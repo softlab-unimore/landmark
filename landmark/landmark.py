@@ -8,8 +8,8 @@ from .plot import PlotExplanation
 
 class Landmark(object):
 
-    def __init__(self, predict_method, dataset, exclude_attrs=['id', 'label'], split_expression=' ',
-                 lprefix='left_', rprefix='right_', **argv, ):
+    def __init__(self, predict_method, dataset, exclude_attrs=('id', 'label'), split_expression=' ',
+                 lprefix='left_', rprefix='right_', **kwargs):
         """
 
         :param predict_method: of the model to be explained
@@ -18,11 +18,24 @@ class Landmark(object):
         :param split_expression: to divide tokens from string
         :param lprefix: left prefix
         :param rprefix: right prefix
-        :param argv: other optional parameters that will be passed to LIME
+        :param kwargs: other optional parameters that will be passed to LIME
         """
+        self.tokens = None
+        self.tmp_dataset = None
+        self.tokens_intersection = None
+        self.tokens_not_overlapped = None
+        self.variable_data = None
+        self.fixed_data = None
+        self.fixed_side = None
+        self.mapper_variable = None
+        self.overlap = None
+        self.add_after_perturbation = None
+        self.impacts = None
+
         self.splitter = re.compile(split_expression)
         self.split_expression = split_expression
-        self.explainer = LimeTextExplainer(class_names=['NO match', 'MATCH'], split_expression=split_expression, **argv)
+        self.explainer = LimeTextExplainer(class_names=['NO match', 'MATCH'], split_expression=split_expression,
+                                           **kwargs)
         self.model_predict = predict_method
         self.dataset = dataset
         self.lprefix = lprefix
@@ -33,7 +46,7 @@ class Landmark(object):
         self.left_cols = [x for x in self.cols if x.startswith(self.lprefix)]
         self.right_cols = [x for x in self.cols if x.startswith(self.rprefix)]
         self.cols = self.left_cols + self.right_cols
-        self.explanations = {}
+        self.explanations = dict()
 
     def explain(self, elements, conf='auto', num_samples=500, **argv):
         """
@@ -52,10 +65,10 @@ class Landmark(object):
             no_match_explanation = self.explain(no_match_elements, 'double', num_samples, **argv)
             return pd.concat([match_explanation, no_match_explanation])
 
-        impact_list = []
+        impact_list = list()
         if 'LIME' == conf:
             for idx in tqdm(range(elements.shape[0])):
-                impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side=None,
+                impacts = self.explain_instance(elements.iloc[[idx]], variable_side='all', fixed_side='',
                                                 num_samples=num_samples, **argv)
                 impacts['conf'] = 'LIME'
                 impact_list.append(impacts)
@@ -65,9 +78,9 @@ class Landmark(object):
         landmark = 'right'
         variable = 'left'
         overlap = False
-        if 'single' == conf:
-            add_before = None
-        elif 'double' == conf:
+        add_before = None  # default if conf == 'single'
+        
+        if conf == 'double':
             add_before = landmark
 
         # right landmark
@@ -97,11 +110,21 @@ class Landmark(object):
     def explain_instance(self, el, variable_side='left', fixed_side='right', add_before_perturbation=None,
                          add_after_perturbation=None, overlap=True, num_samples=500, **argv):
         """
-        Main method to wrap the explainer and generate an landmark. A sort of Facade for the explainer.
+        Main method to wrap the explainer and generate a landmark. A sort of Facade for the explainer.
 
-        :param el: DataFrame containing the element to be explained.
-        :return: landmark DataFrame
+        Args:
+            el: DataFrame containing the element to be explained.
+            num_samples: the number of samples to explain from the el DataFrame.
+            overlap: boolean to overlap tokens or not in the explanation.
+            add_after_perturbation: TO_COMPLETE
+            add_before_perturbation: TO_COMPLETE
+            fixed_side: the side to keep as it is, without perturbations. Can be 'left', 'right', or 'all'.
+            variable_side: the side on which to apply perturbations. Can be 'left', 'right', or 'all'.
+        Returns:
+            landmark DataFrame
         """
+        # TODO: complete docstring
+
         variable_el = el.copy()
         for col in self.cols:
             variable_el[col] = ' '.join(re.split(r' +', str(variable_el[col].values[0]).strip()))
@@ -115,9 +138,9 @@ class Landmark(object):
                                                       **argv)
         self.variable_data = variable_data  # to test the addition before perturbation
 
-        id = el.id.values[0]  # Assume index is the id column
-        self.explanations[f'{self.fixed_side}{id}'] = explanation
-        return self.explanation_to_df(explanation, words, self.mapper_variable.attr_map, id)
+        id_ = el.id.values[0]  # Assume index is the id column
+        self.explanations[f'{self.fixed_side}{id_}'] = explanation
+        return self.explanation_to_df(explanation, words, self.mapper_variable.attr_map, id_)
 
     def prepare_element(self, variable_el, variable_side, fixed_side, add_before_perturbation, add_after_perturbation,
                         overlap):
@@ -290,8 +313,6 @@ class Landmark(object):
         return PlotExplanation.plot(exp_double, figsize)
 
 
-
-
 class Mapper(object):
     """
     This class is useful to encode a row of a dataframe in a string in which a prefix
@@ -323,8 +344,9 @@ class Mapper(object):
              wordpos, word in enumerate(re.split(self.split_expression, str(el[col].values[0])))])
 
     def encode_elements(self, elements):
-        word_dict = {}
-        res_list = []
+        word_dict = dict()
+        res_list = list()
+
         for i in np.arange(elements.shape[0]):
             el = elements.iloc[i]
             word_dict.update(id=el.id)
@@ -334,4 +356,5 @@ class Mapper(object):
                     word_dict.update(word=word, position=wordpos,
                                      word_prefix=chr(ord('A') + colpos) + f"{wordpos:02d}_" + word)
                     res_list.append(word_dict.copy())
+
         return pd.DataFrame(res_list)
