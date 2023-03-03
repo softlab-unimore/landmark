@@ -1,7 +1,5 @@
 import gc
-import re
 from functools import partial
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -11,84 +9,30 @@ from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve, auc
 from tqdm.notebook import tqdm
 
-from ..landmark.landmark import Landmark, Mapper
+from ..landmark.landmark import Landmark
 
 from .removal_strategies import get_tokens_to_remove_five, get_tokens_to_remove_incrementally, \
     get_tokens_to_remove_aopc, get_tokens_to_remove_degradation, get_tokens_to_remove_sufficiency, \
     get_tokens_to_remove_single_units, get_tokens_to_change_class
 
-def get_prefix(word_relevance_df, el, side: str):
-    assert side in ['left', 'right']
-    word_relevance_el = word_relevance_df.copy().reset_index(drop=True)
-    mapper = Mapper([x for x in el.columns if x.startswith(side + '_') and x != side + '_id'], r' ')
-    available_prefixes = mapper.encode_attr(el).split()
-    assigned_pref = []
-    word_prefixes = []
-    attr_to_code = {v: k for k, v in mapper.attr_map.items()}
-    for i in range(word_relevance_el.shape[0]):
-        word = str(word_relevance_el.loc[i, side + '_word'])
-        if word == '[UNP]':
-            word_prefixes.append('[UNP]')
-        else:
-            col = word_relevance_el.loc[i, side + '_attribute']
-            col_code = attr_to_code[side + '_' + col]
-            turn_prefixes = [x for x in available_prefixes if x[0] == col_code]
-            idx = 0
-            while idx < len(turn_prefixes) and word != turn_prefixes[idx][4:]:
-                idx += 1
-            if idx < len(turn_prefixes):
-                tmp = turn_prefixes[idx]
-                del turn_prefixes[idx]
-                word_prefixes.append(tmp)
-                assigned_pref.append(tmp)
-            else:
-                idx = 0
-                while idx < len(assigned_pref) and word != assigned_pref[idx][4:]:
-                    idx += 1
-                if idx < len(assigned_pref):
-                    word_prefixes.append(assigned_pref[idx])
-                else:
-                    assert False, word
 
-    return word_prefixes
-
-
-def append_prefix(em_df, word_relevance, decision_unit_view=False,
-                  exclude_attrs=('id', 'left_id', 'right_id', 'label')):
-    ids = word_relevance['id'].unique()
-    res_df = list()
-    for id in ids:
-        el = em_df[em_df.id == id]
-        word_relevance_el = word_relevance[word_relevance.id == id]
-        if decision_unit_view is True:
-            word_relevance_el['left_word_prefixes'] = get_prefix(word_relevance_el, el, 'left')
-            word_relevance_el['right_word_prefixes'] = get_prefix(word_relevance_el, el, 'right')
-        res_df.append(word_relevance_el.copy())
-    res_df = pd.concat(res_df)
-    if decision_unit_view is True:
-        mapper = Mapper(em_df.loc[:, np.setdiff1d(em_df.columns, exclude_attrs)], r' ')
-        assert len(mapper.attr_map.keys()) % 2 == 0, 'The attributes must be the same for the two sources.'
-        shift = int(len(mapper.attr_map.keys()) / 2)
-        res_df['right_word_prefixes'] = res_df['right_word_prefixes'].apply(
-            lambda x: chr(ord(x[0]) + shift) + x[1:] if x != '[UNP]' else x)
-
-    return res_df
-
-
-def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', 'left_id', 'right_id', 'label'),
+"""def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', 'left_id', 'right_id', 'label'),
                 score_col='pred'):
     print(f'Testing unit remotion with -- {score_col}')
     assert df_to_process.shape[
                0] > 0, f'DataFrame to evaluate must have some elements. Passed df has shape {df_to_process.shape[0]}'
     evaluation_df = df_to_process.copy().replace(pd.NA, '')
     word_relevance_prefix = append_prefix(evaluation_df, word_relevance)
+
     if score_col == 'pred':
         word_relevance_prefix['impact'] = word_relevance_prefix[score_col] - 0.5
     else:
         word_relevance_prefix['impact'] = word_relevance_prefix[score_col]
+
     word_relevance_prefix['conf'] = 'bert'
 
-    res_list = []
+    res_list = list()
+
     for side in ['left', 'right']:
         evaluation_df['pred'] = predictor(evaluation_df)
         side_word_relevance_prefix = word_relevance_prefix.copy()
@@ -102,7 +46,7 @@ def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', '
                                  utility=True)
         res_list.append(res_df.copy())
 
-    return pd.concat(res_list)
+    return pd.concat(res_list)"""
 
 
 def correlation_vs_landmark(df, word_relevance, predictor, match_ids, no_match_ids, score_col='pred', num_samples=250):
@@ -199,8 +143,8 @@ def process_roc_auc(y_true, y_pred, plot=True):
     return auc_score
 
 
-def token_remotion_delta_performance(df, y_true, word_relevance, predictor, k_list=[10, 5, 3, 1], plot=True,
-                                     score_col='pred'):
+def token_removal_delta_performance(df, y_true, word_relevance, predictor, k_list=(10, 5, 3, 1), plot=True,
+                                    score_col='pred'):
     print(f'Testing {score_col}!')
     tokens_dict = {}
     if score_col == 'pred':
@@ -276,7 +220,7 @@ def token_remotion_delta_performance(df, y_true, word_relevance, predictor, k_li
 class EvaluateExplanation(Landmark):
 
     def __init__(self, dataset, impacts_df, percentage=.25, num_rounds=10, evaluate_removing_du=False,
-                 recompute_embeddings=True, **argv):
+                 recompute_embeddings=True, variable_side: str='all', fixed_side: str='all', **kwargs):
         """
         Args:
             evaluate_removing_du: specific parameter for WYM: evaluate Decision Units impacts instead of removing
@@ -285,13 +229,16 @@ class EvaluateExplanation(Landmark):
             single tokens. This parameter must be True if evaluate_removing_du is False.
         """
 
-        super().__init__(dataset=dataset, **argv)
+        super().__init__(dataset=dataset, **kwargs)
         self.tmp_dataset = None
         self.impacts_df = impacts_df
         self.percentage = percentage
         self.num_rounds = num_rounds
         self.evaluate_removing_du = evaluate_removing_du  # was decision_unit_view, default False
         self.recompute_embeddings = recompute_embeddings  # was remove_decision_unit_only, default False
+        self.variable_side = variable_side
+        self.fixed_side = fixed_side
+
         self.impacts = list()
         self.words_with_prefixes = list()
         self.variable_encoded = list()
@@ -302,12 +249,30 @@ class EvaluateExplanation(Landmark):
         self.data_list = list()
         self.preds = None
 
-    def prepare_impacts(self, start_el, impacts_df, variable_side, fixed_side, add_before_perturbation,
-                        add_after_perturbation, overlap):
-        for id_ in start_el.id.unique():
+        # TODO: write a method to update the dataset to use for the evaluation
+
+
+    def update_sides(self, new_variable_side: str, new_fixed_side: str) -> None:
+        """
+        Method to update the variable and fixed sides for the evaluation.
+        Args:
+            new_fixed_side: the side to keep as it is, without perturbations. Can be 'left', 'right', or 'all'.
+            new_variable_side: the side on which to apply perturbations. Can be 'left', 'right', or 'all'.
+
+        Returns:
+            None
+        """
+        if new_variable_side:
+            self.variable_side = new_variable_side
+
+        if new_fixed_side:
+            self.fixed_side = new_fixed_side
+
+    def prepare_impacts(self, add_before_perturbation, add_after_perturbation, overlap):
+        for id_ in self.dataset.id.unique():
             turn_variable_encoded = None
 
-            impacts_sorted = impacts_df.query(f'id == {id_}').sort_values('impact', ascending=False).reset_index(
+            impacts_sorted = self.impacts_df.query(f'id == {id_}').sort_values('impact', ascending=False).reset_index(
                 drop=True)
             self.impacts.append(impacts_sorted['impact'].values)
 
@@ -318,9 +283,9 @@ class EvaluateExplanation(Landmark):
                 else:
                     self.words_with_prefixes.append(impacts_sorted['word_prefix'].values)
 
-                turn_variable_encoded = self.prepare_element(start_el[start_el.id == id_].copy(), variable_side,
-                                                             fixed_side, add_before_perturbation,
-                                                             add_after_perturbation, overlap)
+                turn_variable_encoded = self.prepare_element(self.dataset[self.dataset.id == id_].copy(),
+                                                             self.variable_side, self.fixed_side,
+                                                             add_before_perturbation, add_after_perturbation, overlap)
             else:
                 if self.evaluate_removing_du:
                     self.words_with_prefixes.append(impacts_sorted)
@@ -388,9 +353,9 @@ class EvaluateExplanation(Landmark):
 
 
     def generate_descriptions(self, combinations_to_remove, words_with_prefixes, variable_encoded):
-        description_to_evaluate = []
-        comb_name_sequence = []
-        tokens_to_remove_sequence = []
+        description_to_evaluate = list()
+        comb_name_sequence = list()
+        tokens_to_remove_sequence = list()
         for comb_name, combinations in combinations_to_remove.items():
             for tokens_to_remove in combinations:
                 tmp_encoded = variable_encoded
@@ -409,17 +374,15 @@ class EvaluateExplanation(Landmark):
                 tokens_to_remove_sequence.append(tokens_to_remove)
         return description_to_evaluate, comb_name_sequence, tokens_to_remove_sequence
 
-    def evaluate_impacts(self, start_el, impacts_df, variable_side='left', fixed_side='right',
-                         add_before_perturbation=None,
-                         add_after_perturbation=None, overlap=True, utility=False, k=5):
+    def evaluate_impacts(self, add_before_perturbation=None, add_after_perturbation=None,
+                         overlap=True, utility=False, k=5):
 
-        self.prepare_impacts(start_el, impacts_df, variable_side, fixed_side, add_before_perturbation,
-                             add_after_perturbation, overlap)
+        self.prepare_impacts(add_before_perturbation, add_after_perturbation, overlap)
 
         data_list = list()
         description_to_evaluate_list = list()
-        for index, id_ in enumerate(start_el.id.unique()):
-            all_comb = {}
+        for index, id_ in enumerate(self.dataset.id.unique()):
+            all_comb = dict()
             if utility is False:
                 turn_comb = get_tokens_to_remove_five(self.start_pred[index], self.impacts[index],
                                                       self.percentage, self.num_rounds)
@@ -482,15 +445,15 @@ class EvaluateExplanation(Landmark):
         all_descriptions = np.concatenate(description_to_evaluate_list)
         preds = self.restructure_and_predict(all_descriptions)[:, 1]
         assert len(preds) == len(all_descriptions)
-        splitted_preds = []
+        splitted_preds = list()
         start_idx = 0
         for turn_desc in description_to_evaluate_list:
             end_idx = start_idx + len(turn_desc)
             splitted_preds.append(preds[start_idx: end_idx])
             start_idx = end_idx
         self.preds = preds
-        res_list = []
-        for index, id_ in enumerate(start_el.id.unique()):
+        res_list = list()
+        for index, id_ in enumerate(self.dataset.id.unique()):
             evaluation = {'id': id_, 'start_pred': self.start_pred[index]}
             desc, comb_name_sequence, tokens_to_remove_sequence = data_list[index]
             impacts = self.impacts[index]
@@ -529,17 +492,16 @@ class EvaluateExplanation(Landmark):
 
         impact_df = impacts_all[impacts_all.id.isin(ids)][['word_prefix', 'impact', 'id']]
         start_el = self.dataset[self.dataset.id.isin(ids)]
-        res += self.evaluate_impacts(start_el, impact_df, variable_side, fixed_side, add_before_perturbation,
-                                     add_after_perturbation, overlap, utility)
+        res += self.evaluate_impacts(start_el, impact_df, add_before_perturbation, add_after_perturbation, overlap,
+                                     utility)
 
         if variable_side == 'all':
             impacts_all = self.impacts_df[(self.impacts_df.conf == conf_name)]
             impacts_all = impacts_all[impacts_all.column.str.startswith(self.rprefix)]
             impact_df = impacts_all[impacts_all.id.isin(ids)][['word_prefix', 'impact', 'id']]
             start_el = self.dataset[self.dataset.id.isin(ids)]
-            res += self.evaluate_impacts(start_el, impact_df, variable_side, fixed_side,
-                                         add_before_perturbation,
-                                         add_after_perturbation, overlap, utility)
+            res += self.evaluate_impacts(start_el, impact_df, add_before_perturbation, add_after_perturbation, overlap,
+                                         utility)
 
         res_df = pd.DataFrame(res)
         res_df['conf'] = conf_name
@@ -580,7 +542,7 @@ class EvaluateExplanation(Landmark):
         evaluations_dict.update(self.generate_evaluation(ids, fixed='right', overlap=False, **argv))
         evaluations_dict.update(self.generate_evaluation(ids, fixed='left', overlap=True, **argv))
         evaluations_dict.update(self.generate_evaluation(ids, fixed='left', overlap=False, **argv))
-        res_df = self.evaluate_set(ids, 'LIME', variable_side='all', fixed_side=None, **argv)
+        res_df = self.evaluate_set(ids, 'LIME', variable_side='all', fixed_side='', **argv)
         evaluations_dict['LIME'] = res_df
         res_df = self.evaluate_set(ids, 'left', variable_side='left', fixed_side='right', **argv)
         evaluations_dict['left'] = res_df
