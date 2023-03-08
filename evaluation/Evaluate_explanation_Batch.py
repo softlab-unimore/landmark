@@ -3,20 +3,21 @@ from functools import partial
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import seaborn
 import torch
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve, auc
 from tqdm.notebook import tqdm
 
-from ..landmark.landmark import Landmark
+from ..landmark.landmark import Landmark, PlotExplanation
 
 from .removal_strategies import get_tokens_to_remove_five, get_tokens_to_remove_incrementally, \
     get_tokens_to_remove_aopc, get_tokens_to_remove_degradation, get_tokens_to_remove_sufficiency, \
     get_tokens_to_remove_single_units, get_tokens_to_change_class
 
 
-"""def evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', 'left_id', 'right_id', 'label'),
+"""def _evaluate_df(word_relevance, df_to_process, predictor, exclude_attrs=('id', 'left_id', 'right_id', 'label'),
                 score_col='pred'):
     print(f'Testing unit remotion with -- {score_col}')
     assert df_to_process.shape[
@@ -219,8 +220,9 @@ def token_removal_delta_performance(df, y_true, word_relevance, predictor, k_lis
 
 class EvaluateExplanation(Landmark):
 
-    def __init__(self, dataset, impacts_df, percentage=.25, num_rounds=10, evaluate_removing_du=False,
-                 recompute_embeddings=True, variable_side: str='all', fixed_side: str='all', **kwargs):
+    def __init__(self, dataset: pd.DataFrame, impacts_df: pd.DataFrame, percentage: float=.25, num_rounds: int=10,
+                 evaluate_removing_du: bool=False, recompute_embeddings: bool=True, variable_side: str='all',
+                 fixed_side: str='all', add_before_perturbation=None, add_after_perturbation=None, **kwargs):
         """
         Args:
             evaluate_removing_du: specific parameter for WYM: evaluate Decision Units impacts instead of removing
@@ -229,13 +231,43 @@ class EvaluateExplanation(Landmark):
             single tokens. This parameter must be True if evaluate_removing_du is False.
         """
 
+        if not recompute_embeddings and not evaluate_removing_du:
+            ValueError("It is not possible to evaluate on single tokens without recomputing embeddings.")
+
         super().__init__(dataset=dataset, **kwargs)
-        self.tmp_dataset = None
+        # init of evaluation parameters
         self.impacts_df = impacts_df
         self.percentage = percentage
         self.num_rounds = num_rounds
+
         self.evaluate_removing_du = evaluate_removing_du  # was decision_unit_view, default False
         self.recompute_embeddings = recompute_embeddings  # was remove_decision_unit_only, default False
+
+        self.add_after_perturbation = add_after_perturbation
+        self.add_before_perturbation = add_before_perturbation
+
+        self.fixed_accepted_sides = frozenset(['left', 'right', 'all', ''])
+        self.variable_accepted_sides = frozenset(['left', 'right', 'all'])
+
+        if variable_side not in self.variable_accepted_sides:
+            raise ValueError("Invalid settings: variable side is not left, right or all.")
+
+        if fixed_side not in self.fixed_accepted_sides:
+            raise ValueError("Invalid settings: fixed side is not left, right or all.")
+
+        if variable_side in ('left', 'right') and fixed_side == 'all':
+            raise ValueError(f"Invalid settings: variable side is {variable_side} but fixed side is {fixed_side}.")
+
+        if fixed_side in ('left', 'right') and variable_side == 'all':
+            raise ValueError(f"Invalid settings: fixed side is {fixed_side} but variable side is {variable_side}.")
+
+        if variable_side == 'all' and fixed_side == 'all':
+            fixed_side = str()
+
+        if variable_side == fixed_side:
+            raise ValueError(f"Invalid settings: variable and fixed sides are the same "
+                             f"({variable_side}, {fixed_side}).")
+
         self.variable_side = variable_side
         self.fixed_side = fixed_side
 
@@ -243,37 +275,149 @@ class EvaluateExplanation(Landmark):
         self.words_with_prefixes = list()
         self.variable_encoded = list()
         self.fixed_data_list = list()
-        self.fixed_data = None
         self.batch_fixed_data = None
         self.start_pred = None
         self.data_list = list()
         self.preds = None
+        self.old_res_df = None
 
-        # TODO: write a method to update the dataset to use for the evaluation
+        # defined at runtime
+        self.res_df = None
+        self.counterfactuals_plotting_data = None
 
-
-    def update_sides(self, new_variable_side: str, new_fixed_side: str) -> None:
+    def update_settings(self, **kwargs) -> None:
         """
         Method to update the variable and fixed sides for the evaluation.
         Args:
-            new_fixed_side: the side to keep as it is, without perturbations. Can be 'left', 'right', or 'all'.
-            new_variable_side: the side on which to apply perturbations. Can be 'left', 'right', or 'all'.
+            **kwargs: EvaluateExplanation and Landmark parameters to update.
 
         Returns:
             None
         """
-        if new_variable_side:
-            self.variable_side = new_variable_side
 
-        if new_fixed_side:
-            self.fixed_side = new_fixed_side
+        # updated_wym_params = False
 
-    def prepare_impacts(self, add_before_perturbation, add_after_perturbation, overlap):
+        super().update_settings(**kwargs)
+
+        if 'impacts_df' in kwargs:
+            self.impacts_df = kwargs['impacts_df']
+
+        if 'percentage' in kwargs:
+            self.percentage = kwargs['percentage']
+
+        if 'num_rounds' in kwargs:
+            self.num_rounds = kwargs['num_rounds']
+
+        evaluate_removing_du = kwargs['evaluate_removing_du'] \
+            if 'evaluate_removing_du' in kwargs else self.evaluate_removing_du
+        recompute_embeddings = kwargs['recompute_embeddings'] \
+            if 'recompute_embeddings' in kwargs else self.recompute_embeddings
+
+        if not recompute_embeddings and not evaluate_removing_du:
+            ValueError("Invalid settings: it is not possible to evaluate on single tokens without "
+                       "recomputing embeddings.")
+        else:
+            self.evaluate_removing_du = evaluate_removing_du
+            self.recompute_embeddings = recompute_embeddings
+
+        variable_side = kwargs['variable_side'] if 'variable_side' in kwargs else str()
+        fixed_side = kwargs['fixed_side'] if 'fixed_side' in kwargs else str()
+
+        if variable_side or fixed_side:
+            if not variable_side and fixed_side:
+                raise ValueError(f"Invalid settings: variable side is empty but fixed side is {fixed_side}.")
+
+            if variable_side:
+                if variable_side not in self.variable_accepted_sides:
+                    raise ValueError("Invalid settings: variable side is not left, right or all.")
+
+                if (variable_side in ('left', 'right') and fixed_side == 'all') or \
+                        (variable_side in ('left', 'right') and not fixed_side):
+                    raise ValueError(
+                        f"Invalid settings: variable side is {variable_side} but fixed side is empty.")
+
+            if fixed_side:
+                if fixed_side not in self.fixed_accepted_sides:
+                    raise ValueError("Invalid settings: fixed side is not left, right or all.")
+
+                if (fixed_side in ('left', 'right') and variable_side == 'all') or \
+                        (fixed_side in ('left', 'right') and not variable_side):
+                    raise ValueError(
+                        f"Invalid settings: fixed side is {fixed_side} but variable side is empty.")
+
+            if variable_side == 'all' and fixed_side:
+                print(f"Warning, invalid settings: variable side is {variable_side} and fixed side is not empty. "
+                      f"Ignoring fixed side value.")
+                fixed_side = str()
+
+            if variable_side == fixed_side:
+                raise ValueError(f"Invalid settings: variable and fixed sides are the same "
+                                 f"({variable_side}, {fixed_side}).")
+
+            if variable_side:
+                self.variable_side = variable_side
+                self.fixed_side = fixed_side
+
+        self.impacts.clear()
+        self.words_with_prefixes.clear()
+        self.variable_encoded.clear()
+        self.fixed_data_list.clear()
+        self.fixed_data = None
+        self.batch_fixed_data = None
+        self.start_pred = None
+        self.data_list.clear()
+        self.preds = None
+        self.old_res_df = self.res_df
+        self.res_df = None
+        self.counterfactuals_plotting_data = None
+
+        print("EvaluateExplanation settings updated; old results DataFrame is available as old_res_df.")
+
+    def plot_counterfactuals(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex()):
+        PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette)
+
+    def generate_counterfactual_examples(self):
+        def generate_description_from_side_attributes(df_row, side='left'):
+            if side not in ('left', 'right'):
+                raise ValueError("Wrong side value")
+
+            return ' '.join(
+                [str(df_row[key]) for key in df_row.keys() if
+                 key.startswith(f'{side}_') and df_row[key] is not np.nan and key != f'{side}_id'])
+
+        def split_left_and_right_word_prefixes(group_df):
+            encoded_left_desc = group_df[group_df['column'].str.startswith('left_')]['word_prefix'].to_list()
+            encoded_right_desc = group_df[group_df['column'].str.startswith('right_')]['word_prefix'].to_list()
+            return pd.Series([[encoded_left_desc, encoded_right_desc]], index=['encoded_descs'])
+
+        counterfactual_examples = self.res_df[self.res_df['detected_delta'] >= 0.5]
+        best_counterfactuals = counterfactual_examples.loc[
+            counterfactual_examples.groupby(['id'])['num_tokens'].idxmax()]
+
+        landmark_plotting_data = best_counterfactuals.merge(self.dataset, on='id')
+
+        landmark_plotting_data['left_description'] = landmark_plotting_data.apply(
+            generate_description_from_side_attributes, axis=1)
+        landmark_plotting_data['right_description'] = landmark_plotting_data.apply(
+            generate_description_from_side_attributes, side='right',
+            axis=1)
+
+        encoded_descriptions = self.mapper.encode_elements(self.dataset).groupby('id').apply(
+            split_left_and_right_word_prefixes)
+
+        self.counterfactuals_plotting_data = landmark_plotting_data.merge(encoded_descriptions, on='id')
+
+        return self.counterfactuals_plotting_data
+
+    def prepare_impacts(self):
         for id_ in self.dataset.id.unique():
             turn_variable_encoded = None
+            impacts_sorted = self.impacts_df.query(f'id == {id_}')
 
-            impacts_sorted = self.impacts_df.query(f'id == {id_}').sort_values('impact', ascending=False).reset_index(
-                drop=True)
+            if not self.evaluate_removing_du:
+                impacts_sorted = impacts_sorted.query(f'attribute.str.startswith("{self.variable_side}")')
+
+            impacts_sorted = impacts_sorted.sort_values('impact', ascending=False).reset_index(drop=True)
             self.impacts.append(impacts_sorted['impact'].values)
 
             if self.recompute_embeddings:
@@ -283,9 +427,7 @@ class EvaluateExplanation(Landmark):
                 else:
                     self.words_with_prefixes.append(impacts_sorted['word_prefix'].values)
 
-                turn_variable_encoded = self.prepare_element(self.dataset[self.dataset.id == id_].copy(),
-                                                             self.variable_side, self.fixed_side,
-                                                             add_before_perturbation, add_after_perturbation, overlap)
+                turn_variable_encoded = self.prepare_element(self.dataset[self.dataset.id == id_].copy())
             else:
                 if self.evaluate_removing_du:
                     self.words_with_prefixes.append(impacts_sorted)
@@ -313,7 +455,7 @@ class EvaluateExplanation(Landmark):
 
         df_list = list()
         for single_row in perturbed_strings:
-            df_list.append(self.mapper_variable.decode_words_to_attr_dict(single_row))
+            df_list.append(self.mapper.decode_words_to_attr_dict(single_row))
         variable_df = pd.DataFrame.from_dict(df_list)
         if self.add_after_perturbation is not None:
             self.add_tokens(variable_df, variable_df.columns, self.add_after_perturbation, overlap=self.overlap)
@@ -374,10 +516,9 @@ class EvaluateExplanation(Landmark):
                 tokens_to_remove_sequence.append(tokens_to_remove)
         return description_to_evaluate, comb_name_sequence, tokens_to_remove_sequence
 
-    def evaluate_impacts(self, add_before_perturbation=None, add_after_perturbation=None,
-                         overlap=True, utility=False, k=5):
+    def evaluate_impacts(self, utility=False, k=5):
 
-        self.prepare_impacts(add_before_perturbation, add_after_perturbation, overlap)
+        self.prepare_impacts()
 
         data_list = list()
         description_to_evaluate_list = list()
@@ -477,10 +618,14 @@ class EvaluateExplanation(Landmark):
                             [list(turn_pref[tokens_to_remove]) for turn_pref in words_with_prefixes]))
 
                 else:
+                    # TODO: check this in case of self.evaluate_removing_du = False after update_settings
                     evaluation.update(tokens_removed=list(words_with_prefixes[tokens_to_remove]))
                 res_list.append(evaluation.copy())
 
-        return res_list
+        self.res_df = pd.DataFrame(res_list)
+        self.res_df['error'] = self.res_df.expected_delta - self.res_df.detected_delta
+
+        return self.res_df
 
 
     def evaluate_set(self, ids, conf_name, variable_side='left', fixed_side='right', add_before_perturbation=None,
@@ -492,16 +637,14 @@ class EvaluateExplanation(Landmark):
 
         impact_df = impacts_all[impacts_all.id.isin(ids)][['word_prefix', 'impact', 'id']]
         start_el = self.dataset[self.dataset.id.isin(ids)]
-        res += self.evaluate_impacts(start_el, impact_df, add_before_perturbation, add_after_perturbation, overlap,
-                                     utility)
+        res += self.evaluate_impacts(impact_df, add_before_perturbation)
 
         if variable_side == 'all':
             impacts_all = self.impacts_df[(self.impacts_df.conf == conf_name)]
             impacts_all = impacts_all[impacts_all.column.str.startswith(self.rprefix)]
             impact_df = impacts_all[impacts_all.id.isin(ids)][['word_prefix', 'impact', 'id']]
             start_el = self.dataset[self.dataset.id.isin(ids)]
-            res += self.evaluate_impacts(start_el, impact_df, add_before_perturbation, add_after_perturbation, overlap,
-                                         utility)
+            res += self.evaluate_impacts(impact_df, add_before_perturbation)
 
         res_df = pd.DataFrame(res)
         res_df['conf'] = conf_name
