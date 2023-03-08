@@ -232,91 +232,6 @@ class PlotExplanation:
 
         colored_df = color_descriptions(data_df, left_colors, right_colors)
 
-        style_backup = """
-        
-            #first_row {
-                    border-radius: 15px 15px 0px 0px;
-                    border: 2px solid black;
-                }
-                
-                #first_row > th {
-                    border: 2px solid black;
-                }
-                
-                #first_row > th:first-child{
-                    border-radius: 15px 0 0 0;
-                }
-                
-                #first_row > th:last-child{
-                    border-radius: 0 15px 0 0;
-                }
-                                
-                table, tr, td, th {
-                    border: 1px solid gray;
-                    text-align: center;
-                    border-collapse: separate;
-                    border-spacing: 0;
-                }
-                
-                table{
-                    border-radius: 15px 15px 15px 15px;
-                }
-                
-                del {
-                    color: red;
-                }
-                
-                .tr2 {
-                    border-bottom: 2px solid black;
-                }
-                
-                .tr1 {
-                    border-top: 2px solid black;
-                }
-                
-                .pred {
-                    border: 2px solid black;
-                }
-                
-                .entity1 .entity2 {
-                    border-left: 2px solid black;
-                }
-                
-                html{
-                    font-family: Arial, sans-serif;
-                }
-                
-                
-                
-                table {
-                    border-collapse: collapse;
-                    border-radius: 10px;
-                    overflow: hidden;
-                }
-
-                table th, table td {
-                    padding: 8px;
-                    text-align: center;
-                }
-                
-                table tbody td:first-child {
-                    border-top-left-radius: 10px;
-                }
-
-                table tbody td:last-child {
-                    border-top-right-radius: 10px;
-                    border-bottom-left-radius: 10px;
-                }
-                
-                table tbody tr:last-child td:first-child {
-                    border-bottom-left-radius: 10px;
-                }
-                
-                table tbody tr:last-child td:last-child {
-                    border-bottom-right-radius: 10px;
-                }
-        """
-
         html_page = '<html>'
         html_page += """
         <head>
@@ -340,17 +255,23 @@ class PlotExplanation:
                 }
                                 
                 table, tr, td, th {
-                    border: 1px solid gray;
                     text-align: center;
-                    border-collapse: separate;
-                    border-spacing: 0;
+                    border-collapse: collapse;
+                }
+                
+                tr, td, th{
+                    border: 1px solid gray;
                 }
                 
                 table{
-                    border-radius: 15px 15px 0 0;
-                    border-left: 2px solid black;
-                    border-bottom: 2px solid black;
+                    border: 3px solid black;
+                    border-radius: 15px 15px 15px 15px;
                     min-width: 100%;
+                }
+                
+                #container{
+                    margin: 0 auto;
+                    min-width: 80%;
                 }
                 
                 td {
@@ -389,6 +310,7 @@ class PlotExplanation:
         </head>
         """
         html_page += '<body>'
+        html_page += '<span id="container">'
         html_page += '<table>'
         html_page += """
             <tr id="first_row">
@@ -491,6 +413,8 @@ class PlotExplanation:
                 </tr>
             """
 
+        html_page += "</table>"
+        html_page += "</span>"
         html_page += '</body>'
         html_page += '</html>'
 
