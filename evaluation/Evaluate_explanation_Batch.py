@@ -373,8 +373,8 @@ class EvaluateExplanation(Landmark):
 
         print("EvaluateExplanation settings updated; old results DataFrame is available as old_res_df.")
 
-    def plot_counterfactuals(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex()):
-        PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette)
+    def plot_counterfactual(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex()):
+        return PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette)
 
     def generate_counterfactual_examples(self):
         def generate_description_from_side_attributes(df_row, side='left'):
