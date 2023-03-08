@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas
 import seaborn as sns
 
 
@@ -131,27 +132,134 @@ class PlotExplanation:
         return fig, axes
 
     @staticmethod
-    def plot_counterfactual(data_df, pred_percentage=True):
+    def plot_counterfactual(data_df: pandas.DataFrame, pred_percentage: bool=True,
+                            palette: list=sns.color_palette().as_hex()):
         def generate_strikethrough_description(encoded_description, tokens_to_remove):
-            new_description = ''
+            new_description = str()
             whitespace = ' '
 
             for desc_token in encoded_description:
-                token = desc_token.split('_')[-1]  # remove prefix
-                if desc_token in tokens_to_remove:
-                    new_description = whitespace.join([new_description, f'<del>{token}</del>'])
+                token = desc_token.split('">')[-1]  # remove first font tag part, but still has </font> suffix
+                token = token.split('<')[0] # remove suffix
+                cleaned_token = token.split('_')[-1]  # remove wym prefix
+                first_part_color_tag, second_part_color_tag = desc_token.split(token)  # recompute the html font tag
+
+                if token in tokens_to_remove:
+                    new_description = whitespace.join([new_description, f'<del>{cleaned_token}</del>'])
                 else:
-                    new_description = whitespace.join([new_description, token])
+                    cleaned_token = first_part_color_tag + cleaned_token + second_part_color_tag
+                    new_description = whitespace.join([new_description, cleaned_token])
 
             return new_description
 
-        html_page = '<html>'
-        html_page += """<head>
-            <style>
+        def color_descriptions(df_to_color, left_colors, right_colors):
+            whitespace = ' '
+            starting_prefix = 'A'
+            tmp_df = df_to_color.copy()
+
+            left_attr_to_prefix = {attribute: chr(ord(starting_prefix) + prefix_idx)
+                                   for prefix_idx, (attribute, _) in enumerate(left_colors)}
+
+            starting_prefix = chr(ord(starting_prefix) + len(left_colors))
+
+            right_attr_to_prefix = {attribute: chr(ord(starting_prefix) + prefix_idx)
+                                   for prefix_idx, (attribute, _) in enumerate(right_colors)}
+
+            for index, row in tmp_df.iterrows():
+                new_left_description = list()
+                new_left_encoded_description = list()
+                new_right_description = list()
+                new_right_encoded_description = list()
+                left_encoded_description, right_encoded_description = row['encoded_descs']
+
+                for attribute, color in left_colors:
+                    new_left_description.append(f'<font color="{color}">{row[attribute]}</font>')
+
+                    if left_encoded_description:
+                        attribute_prefix = left_attr_to_prefix[attribute]
+
+                        for encoded_token in left_encoded_description:
+                            if encoded_token.startswith(attribute_prefix):
+                                new_left_encoded_description.append(f'<font color="{color}">{encoded_token}</font>')
+
+                for attribute, color in right_colors:
+                    new_right_description.append(f'<font color="{color}">{row[attribute]}</font>')
+
+                    if right_encoded_description:
+                        attribute_prefix = right_attr_to_prefix[attribute]
+
+                        for encoded_token in right_encoded_description:
+                            if encoded_token.startswith(attribute_prefix):
+                                new_right_encoded_description.append(f'<font color="{color}">{encoded_token}</font>')
+
+                df_to_color.at[index, 'left_description'] = whitespace.join(new_left_description)
+                df_to_color.at[index, 'right_description'] = whitespace.join(new_right_description)
+                df_to_color.at[index, 'encoded_descs'] = [new_left_encoded_description, new_right_encoded_description]
+
+            return df_to_color
+
+
+        left_columns = [column for column in data_df.columns if column.startswith('left_')
+                        and column not in ('left_id', 'left_description')]
+        right_columns = [column for column in data_df.columns if column.startswith('right_')
+                         and column not in ('right_id', 'right_description')]
+        left_number_of_colors = len(left_columns)
+        right_number_of_colors = len(right_columns)
+        palette_length = len(palette)
+
+        if palette_length < left_number_of_colors:
+            raise ValueError(f"Palette length ({palette_length}) is smaller than the number of "
+                             f"left attributes ({left_number_of_colors}).")
+
+        if palette_length < right_number_of_colors:
+            raise ValueError(f"Palette length ({palette_length}) is smaller than the number of "
+                             f"right attributes ({right_number_of_colors}).")
+
+        if palette_length > left_number_of_colors:
+            left_palette = palette[:left_number_of_colors]
+        else:
+            left_palette = palette
+
+        if palette_length > right_number_of_colors:
+            right_palette = palette[:right_number_of_colors]
+        else:
+            right_palette = palette
+
+        left_colors = [(attribute, color) for attribute, color in zip(left_columns, left_palette)]
+        right_colors = [(attribute, color) for attribute, color in zip(right_columns, right_palette)]
+
+        # df_to_color = data_df.copy()
+
+        colored_df = color_descriptions(data_df, left_colors, right_colors)
+
+        style_backup = """
+        
+            #first_row {
+                    border-radius: 15px 15px 0px 0px;
+                    border: 2px solid black;
+                }
+                
+                #first_row > th {
+                    border: 2px solid black;
+                }
+                
+                #first_row > th:first-child{
+                    border-radius: 15px 0 0 0;
+                }
+                
+                #first_row > th:last-child{
+                    border-radius: 0 15px 0 0;
+                }
+                                
                 table, tr, td, th {
                     border: 1px solid gray;
                     text-align: center;
-                    border-collapse: collapse;
+                    border-collapse: separate;
+                    border-spacing: 0;
+                }
+                
+                table{
+                    border-radius: 15px 15px 15px 15px;
                 }
                 
                 del {
@@ -159,11 +267,122 @@ class PlotExplanation:
                 }
                 
                 .tr2 {
-                    border-bottom: 3px solid black;
+                    border-bottom: 2px solid black;
                 }
                 
                 .tr1 {
-                    border-top: 3px solid black;
+                    border-top: 2px solid black;
+                }
+                
+                .pred {
+                    border: 2px solid black;
+                }
+                
+                .entity1 .entity2 {
+                    border-left: 2px solid black;
+                }
+                
+                html{
+                    font-family: Arial, sans-serif;
+                }
+                
+                
+                
+                table {
+                    border-collapse: collapse;
+                    border-radius: 10px;
+                    overflow: hidden;
+                }
+
+                table th, table td {
+                    padding: 8px;
+                    text-align: center;
+                }
+                
+                table tbody td:first-child {
+                    border-top-left-radius: 10px;
+                }
+
+                table tbody td:last-child {
+                    border-top-right-radius: 10px;
+                    border-bottom-left-radius: 10px;
+                }
+                
+                table tbody tr:last-child td:first-child {
+                    border-bottom-left-radius: 10px;
+                }
+                
+                table tbody tr:last-child td:last-child {
+                    border-bottom-right-radius: 10px;
+                }
+        """
+
+        html_page = '<html>'
+        html_page += """
+        <head>
+            <style>
+            
+                #first_row {
+                    border-radius: 15px 15px 0px 0px;
+                    border: 2px solid black;
+                }
+                
+                #first_row th {
+                    border: 2px solid black;
+                }
+                
+                #first_row th:first-child{
+                    border-radius: 15px 0 0 0;
+                }
+                
+                #first_row th:last-child{
+                    border-radius: 0 15px 0 0;
+                }
+                                
+                table, tr, td, th {
+                    border: 1px solid gray;
+                    text-align: center;
+                    border-collapse: separate;
+                    border-spacing: 0;
+                }
+                
+                table{
+                    border-radius: 15px 15px 0 0;
+                    border-left: 2px solid black;
+                    border-bottom: 2px solid black;
+                    min-width: 100%;
+                }
+                
+                td {
+                    padding: 10px;
+                }
+                
+                table tbody tr:last-child{
+                    border-bottom: 2px solid black;
+                }
+                
+                del {
+                    color: red;
+                }
+                
+                .tr2 {
+                    border-bottom: 2px solid black;
+                }
+                
+                .tr1 {
+                    border-top: 2px solid black;
+                }
+                
+                .pred {
+                    border: 2px solid black;
+                }
+                
+                tr.entity1 tr.entity2 {
+                    border-left: 2px solid black;
+                }
+                
+                html{
+                    font-family: Arial, sans-serif;
                 }
                 
             </style>
@@ -172,7 +391,7 @@ class PlotExplanation:
         html_page += '<body>'
         html_page += '<table>'
         html_page += """
-            <tr>
+            <tr id="first_row">
                 <th></th>
                 <th>Match</th>
                 <th>Prediction</th>
@@ -180,34 +399,81 @@ class PlotExplanation:
                 <th>New Prediction</th>
             </tr>
         """
-        for _, row in data_df.iterrows():
+        for _, row in colored_df.iterrows():
+            left_description = row['left_description']
+            right_description = row['right_description']
+            start_pred = row['start_pred']
+            new_pred = row['new_pred']
+            left_encoded_desc, right_encoded_desc = row['encoded_descs']
+            evaluate_removing_du = False
+
+            # check if evaluation with decision units
+            if len(row['tokens_removed']) == 2:
+                left_tokens_removed, right_tokens_removed = row['tokens_removed']
+
+                # if evaluation with decision units
+                if type(left_tokens_removed) == list and type(right_tokens_removed) == list:
+                    evaluate_removing_du = True
+
+            if evaluate_removing_du:
+                left_tokens_removed, right_tokens_removed = row['tokens_removed']
+
+                if left_encoded_desc:
+                    left_strikethrough_desc = generate_strikethrough_description(left_encoded_desc,
+                                                                                 left_tokens_removed)
+                else:
+                    left_strikethrough_desc = left_description
+
+                if right_encoded_desc:
+                    right_strikethrough_desc = generate_strikethrough_description(right_encoded_desc,
+                                                                                  right_tokens_removed)
+                else:
+                    right_strikethrough_desc = right_description
+
+            # tokens_removed has a different length than 2, or if it contains exactly two elements they are strings,
+            # thus it can't be a list of two lists. The evaluation was made with evaluate_removing_du = False
+            else:
+                left_tokens_removed = row['tokens_removed'] if left_encoded_desc else None
+                right_tokens_removed = row['tokens_removed'] if right_encoded_desc else None
+
+                if left_encoded_desc:
+                    left_strikethrough_desc = generate_strikethrough_description(left_encoded_desc,
+                                                                                 left_tokens_removed)
+                else:
+                    left_strikethrough_desc = left_description
+
+                if right_encoded_desc:
+                    right_strikethrough_desc = generate_strikethrough_description(right_encoded_desc,
+                                                                                  right_tokens_removed)
+                else:
+                    right_strikethrough_desc = right_description
+
             html_page += f"""
                 <tr class='tr1'>
                     <td class='entity1'>
                         Entity 1
                     </td>
                     <td class='left_entity1'>
-                        {row['left_description']}
+                        {left_description}
                     </td>
-                    <td class='left_pred' rowspan=2>
+                    <td class="pred" rowspan=2>
             """
             if pred_percentage:
-                html_page += f"{row['start_pred']:.2%}"
+                html_page += f"{start_pred:.2%}"
             else:
-                html_page += f"{row['start_pred']:.4}"
+                html_page += f"{start_pred:.4}"
 
             html_page += f"""
                     </td>
                     <td class='right_entity1'>
-                        {generate_strikethrough_description(row['encoded_descs'][0], row['tokens_removed'][0]) 
-                        if row['encoded_descs'][0] else row['left_description']} 
+                        {left_strikethrough_desc} 
                     </td>
-                    <td class='right_pred' rowspan=2>
+                    <td class="pred" rowspan=2>
             """
             if pred_percentage:
-                html_page += f"{row['new_pred']:.2%}"
+                html_page += f"{new_pred:.2%}"
             else:
-                html_page += f"{row['new_pred']:.4}"
+                html_page += f"{new_pred:.4}"
 
             html_page += f"""
                     </td>
@@ -217,11 +483,10 @@ class PlotExplanation:
                         Entity 2
                     </td>
                     <td class='left_entity2'>
-                        {row['right_description']}
+                        {right_description}
                     </td>
                     <td class='right_entity2'>
-                        {generate_strikethrough_description(row['encoded_descs'][1], row['tokens_removed'][1])
-                        if row['encoded_descs'][1] else row['right_description']}
+                        {right_strikethrough_desc}
                     </td>
                 </tr>
             """
