@@ -9,10 +9,9 @@ from .plot import PlotExplanation
 class Landmark(object):
 
     def __init__(self, predict_method, dataset, exclude_attrs=('id', 'label'), split_expression=' ',
-                 lprefix='left_', rprefix='right_', variable_side: str='all', fixed_side: str='all', 
+                 lprefix='left_', rprefix='right_', variable_side: str='all', fixed_side: str='all',
                  add_before_perturbation=None, add_after_perturbation=None, overlap: bool=True, **kwargs):
         """
-
         :param predict_method: of the model to be explained
         :param dataset: containing the elements that will be explained. Used to save the attribute structure.
         :param exclude_attrs: attributes to be excluded from the explanations
@@ -21,15 +20,13 @@ class Landmark(object):
         :param rprefix: right prefix
         :param kwargs: other optional parameters that will be passed to LIME
         """
+
         self.tokens = None
         self.tmp_dataset = None
         self.tokens_intersection = None
         self.tokens_not_overlapped = None
         self.variable_side = variable_side
         self.fixed_side = fixed_side
-        self.variable_data = None
-        self.fixed_data = None
-        self.mapper = None
         self.overlap = overlap
         self.add_before_perturbation = add_before_perturbation
         self.add_after_perturbation = add_after_perturbation
@@ -50,6 +47,27 @@ class Landmark(object):
         self.right_cols = [x for x in self.cols if x.startswith(self.rprefix)]
         self.cols = self.left_cols + self.right_cols
         self.explanations = dict()
+
+        self.variable_data = None
+        self.fixed_data = None
+
+        if self.variable_side == 'all':
+            self.variable_cols = self.cols
+            self.fixed_cols = None
+
+        elif self.variable_side == 'left':
+            self.variable_cols = self.left_cols
+            self.fixed_cols = self.right_cols
+
+        elif self.variable_side == 'right':
+            self.variable_cols = self.right_cols
+            self.fixed_cols = self.left_cols
+
+        else:
+            raise ValueError("Wrong parameters variable and fixed sides.")
+
+        self.variable_mapper = Mapper(self.variable_cols)
+        self.fixed_mapper = Mapper(self.fixed_cols) if self.fixed_cols else None
 
     def update_settings(self, **kwargs):
         updated_dataset = False
@@ -78,8 +96,6 @@ class Landmark(object):
         if 'overlap' in kwargs:
             self.overlap = kwargs['overlap']
             
-        # TODO: implement checks for variable and fixed sides
-            
         if 'add_before_perturbation' in kwargs:
             self.add_before_perturbation = kwargs['add_before_perturbation']
 
@@ -99,7 +115,7 @@ class Landmark(object):
             self.tokens_not_overlapped = None
             self.variable_data = None
             self.fixed_data = None
-            self.mapper = None
+            self.variable_mapper = None
             self.impacts = None
 
             self.cols = [x for x in self.dataset.columns if x not in self.exclude_attrs]
@@ -107,6 +123,24 @@ class Landmark(object):
             self.right_cols = [x for x in self.cols if x.startswith(self.rprefix)]
             self.cols = self.left_cols + self.right_cols
             self.explanations = dict()
+
+        if self.variable_side == 'all':
+            self.variable_cols = self.cols
+            self.fixed_cols = None
+
+        elif self.variable_side == 'left':
+            self.variable_cols = self.left_cols
+            self.fixed_cols = self.right_cols
+
+        elif self.variable_side == 'right':
+            self.variable_cols = self.right_cols
+            self.fixed_cols = self.left_cols
+
+        else:
+            raise ValueError("Wrong parameters variable and fixed sides.")
+
+        self.variable_mapper = Mapper(self.variable_cols)
+        self.fixed_mapper = Mapper(self.fixed_cols) if self.fixed_cols else None
 
         if updated_split_expression:
             self.splitter = re.compile(self.split_expression)
@@ -207,7 +241,7 @@ class Landmark(object):
 
         id_ = el.id.values[0]  # Assume index is the id column
         self.explanations[f'{self.fixed_side}{id_}'] = explanation
-        return self.explanation_to_df(explanation, words, self.mapper.attr_map, id_)
+        return self.explanation_to_df(explanation, words, self.variable_mapper.attr_map, id_)
 
     def prepare_element(self, variable_el):
         """
@@ -217,34 +251,26 @@ class Landmark(object):
         """
 
         if self.variable_side in ['left', 'right']:
-            variable_cols = self.left_cols if self.variable_side == 'left' else self.right_cols
-
-            assert self.fixed_side in ['left', 'right']
-            if self.fixed_side == 'left':
-                fixed_cols, not_fixed_cols = self.left_cols, self.right_cols
-            else:
-                fixed_cols, not_fixed_cols = self.right_cols, self.left_cols
-            mapper_fixed = Mapper(fixed_cols, self.split_expression)
-            self.fixed_data = mapper_fixed.decode_words_to_attr(mapper_fixed.encode_attr(
-                variable_el[fixed_cols]))  # encode and decode data of fixed source to ensure the same format
-            self.mapper = Mapper(not_fixed_cols, self.split_expression)
+            self.fixed_data = self.fixed_mapper.decode_words_to_attr(self.fixed_mapper.encode_attr(
+                variable_el[self.fixed_cols]))  # encode and decode data of fixed source to ensure the same format
 
             if self.add_before_perturbation is not None or self.add_after_perturbation is not None:
                 self.compute_tokens(variable_el)
+
                 if self.add_before_perturbation is not None:
-                    self.add_tokens(variable_el, variable_cols, self.add_before_perturbation, self.overlap)
-            variable_data = Mapper(variable_cols, self.split_expression).encode_attr(variable_el)
+                    self.add_tokens(variable_el, self.variable_cols, self.add_before_perturbation, self.overlap)
 
         elif self.variable_side == 'all':
-            variable_cols = self.left_cols + self.right_cols
-
-            self.mapper = Mapper(variable_cols, self.split_expression)
             self.fixed_data = None
             self.fixed_side = 'all'
-            variable_data = self.mapper.encode_attr(variable_el)
+            self.variable_data = self.variable_mapper.encode_attr(variable_el)
+
         else:
             assert False, f'Not a feasible configuration. self.variable_side: {self.variable_side} not allowed.'
-        return variable_data
+
+        self.variable_data = self.variable_mapper.encode_attr(variable_el)
+
+        return self.variable_data
 
     def explanation_to_df(self, explanation, words, attribute_map, id):
         """
@@ -329,7 +355,7 @@ class Landmark(object):
         """
         df_list = []
         for single_row in perturbed_strings:
-            df_list.append(self.mapper.decode_words_to_attr_dict(single_row))
+            df_list.append(self.variable_mapper.decode_words_to_attr_dict(single_row))
         variable_df = pd.DataFrame.from_dict(df_list)
         if self.add_after_perturbation is not None:
             self.add_tokens(variable_df, variable_df.columns, self.add_after_perturbation, overlap=self.overlap)
@@ -382,7 +408,7 @@ class Mapper(object):
     is added to each word to keep track of its attribute and its position.
     """
 
-    def __init__(self, columns, split_expression):
+    def __init__(self, columns, split_expression: str=' '):
         self.columns = columns
         self.attr_map = {chr(ord('A') + colidx): col for colidx, col in enumerate(self.columns)}
         self.arange = np.arange(100)

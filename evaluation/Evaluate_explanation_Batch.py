@@ -234,7 +234,10 @@ class EvaluateExplanation(Landmark):
         if not recompute_embeddings and not evaluate_removing_du:
             ValueError("It is not possible to evaluate on single tokens without recomputing embeddings.")
 
-        super().__init__(dataset=dataset, **kwargs)
+        super().__init__(dataset=dataset, variable_side=variable_side, fixed_side=fixed_side,
+                         add_before_perturbation=add_before_perturbation, add_after_perturbation=add_after_perturbation,
+                         **kwargs)
+
         # init of evaluation parameters
         self.impacts_df = impacts_df
         self.percentage = percentage
@@ -275,7 +278,7 @@ class EvaluateExplanation(Landmark):
         self.words_with_prefixes = list()
         self.variable_encoded = list()
         self.fixed_data_list = list()
-        self.batch_fixed_data = None
+        self.fixed_data_df = None
         self.start_pred = None
         self.data_list = list()
         self.preds = None
@@ -283,6 +286,8 @@ class EvaluateExplanation(Landmark):
 
         # defined at runtime
         self.res_df = None
+        self.counterfactual_examples = None
+        self.best_counterfactuals = None
         self.counterfactuals_plotting_data = None
 
     def update_settings(self, **kwargs) -> None:
@@ -363,15 +368,17 @@ class EvaluateExplanation(Landmark):
         self.variable_encoded.clear()
         self.fixed_data_list.clear()
         self.fixed_data = None
-        self.batch_fixed_data = None
+        self.fixed_data_df = None
         self.start_pred = None
         self.data_list.clear()
         self.preds = None
         self.old_res_df = self.res_df
         self.res_df = None
+        self.counterfactual_examples = None
+        self.best_counterfactuals = None
         self.counterfactuals_plotting_data = None
 
-        print("EvaluateExplanation settings updated; old results DataFrame is available as old_res_df.")
+        print("EvaluateExplanation settings updated.")
 
     def plot_counterfactual(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex()):
         return PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette)
@@ -402,9 +409,11 @@ class EvaluateExplanation(Landmark):
             generate_description_from_side_attributes, side='right',
             axis=1)
 
-        encoded_descriptions = self.mapper.encode_elements(self.dataset).groupby('id').apply(
+        encoded_descriptions = self.variable_mapper.encode_elements(self.dataset).groupby('id').apply(
             split_left_and_right_word_prefixes)
 
+        self.counterfactual_examples = counterfactual_examples
+        self.best_counterfactuals = best_counterfactuals
         self.counterfactuals_plotting_data = landmark_plotting_data.merge(encoded_descriptions, on='id')
 
         return self.counterfactuals_plotting_data
@@ -415,7 +424,8 @@ class EvaluateExplanation(Landmark):
             impacts_sorted = self.impacts_df.query(f'id == {id_}')
 
             if not self.evaluate_removing_du:
-                impacts_sorted = impacts_sorted.query(f'attribute.str.startswith("{self.variable_side}")')
+                prefix = self.lprefix if self.variable_side == 'left' else self.rprefix
+                impacts_sorted = impacts_sorted.query(f'attribute.str.startswith("{prefix}")')
 
             impacts_sorted = impacts_sorted.sort_values('impact', ascending=False).reset_index(drop=True)
             self.impacts.append(impacts_sorted['impact'].values)
@@ -428,6 +438,7 @@ class EvaluateExplanation(Landmark):
                     self.words_with_prefixes.append(impacts_sorted['word_prefix'].values)
 
                 turn_variable_encoded = self.prepare_element(self.dataset[self.dataset.id == id_].copy())
+
             else:
                 if self.evaluate_removing_du:
                     self.words_with_prefixes.append(impacts_sorted)
@@ -439,9 +450,9 @@ class EvaluateExplanation(Landmark):
             self.variable_encoded.append(turn_variable_encoded)
 
         if self.fixed_data_list[0] is not None:
-            self.batch_fixed_data = pd.concat(self.fixed_data_list)
+            self.fixed_data_df = pd.concat(self.fixed_data_list)
         else:
-            self.batch_fixed_data = None
+            self.fixed_data_df = None
 
         self.start_pred = self.restructure_and_predict(self.variable_encoded)[:, 1]  # match_score
 
@@ -455,12 +466,12 @@ class EvaluateExplanation(Landmark):
 
         df_list = list()
         for single_row in perturbed_strings:
-            df_list.append(self.mapper.decode_words_to_attr_dict(single_row))
+            df_list.append(self.variable_mapper.decode_words_to_attr_dict(single_row))
         variable_df = pd.DataFrame.from_dict(df_list)
         if self.add_after_perturbation is not None:
             self.add_tokens(variable_df, variable_df.columns, self.add_after_perturbation, overlap=self.overlap)
         if self.fixed_data is not None:
-            fixed_df = self.batch_fixed_data
+            fixed_df = self.fixed_data_df
             fixed_df.reset_index(inplace=True, drop=True)
         else:
             fixed_df = None
@@ -572,17 +583,17 @@ class EvaluateExplanation(Landmark):
                 turn_comb = get_tokens_to_remove_incrementally(self.impacts[index], limit=k)
                 all_comb.update(**turn_comb)
 
-            res = self.generate_descriptions(all_comb, self.words_with_prefixes[index], self.variable_encoded[index])
-            description_to_evaluate, comb_name_sequence, tokens_to_remove_sequence = res
+            description_to_evaluate, comb_name_sequence, tokens_to_remove_sequence = self.generate_descriptions(
+                all_comb, self.words_with_prefixes[index], self.variable_encoded[index])
             data_list.append([description_to_evaluate, comb_name_sequence, tokens_to_remove_sequence])
             self.data_list = data_list
             description_to_evaluate_list.append(description_to_evaluate)
 
         if self.fixed_data_list[0] is not None:
-            self.batch_fixed_data = pd.concat(
+            self.fixed_data_df = pd.concat(
                 [self.fixed_data_list[i] for i, x in enumerate(description_to_evaluate_list) for _ in range(len(x))])
         else:
-            self.batch_fixed_data = None
+            self.fixed_data_df = None
         all_descriptions = np.concatenate(description_to_evaluate_list)
         preds = self.restructure_and_predict(all_descriptions)[:, 1]
         assert len(preds) == len(all_descriptions)
