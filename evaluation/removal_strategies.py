@@ -96,3 +96,42 @@ def get_tokens_to_remove_single_units(impacts_sorted):
 def get_tokens_to_remove_incrementally(impacts_sorted, limit=10):
     limit = min(len(impacts_sorted), limit + 1)  # + 1 because range excludes the right extreme
     return {f'incremental_{i}': [range(i)] for i in range(1, limit)}
+
+def get_tokens_from_neg_to_pos_and_back(start_pred, impacts_sorted, delta: float=0.0):
+    tokens_to_remove = list()
+    index = np.arange(len(impacts_sorted), -1, -1)  # start removing negative impacts to push the score towards match
+
+    delta_score_to_achieve = abs(start_pred - 0.5) + delta
+    current_delta_score = 0
+
+    for i in index:
+        current_token_impact = -impacts_sorted[i]
+        # remove positive impact if element is match, neg impacts if no match
+        if current_token_impact > 0:
+            tokens_to_remove.append(i)
+            current_delta_score += current_token_impact
+        else:  # there are no more tokens with positive (negative) impacts
+            break
+
+        if current_delta_score >= delta_score_to_achieve:
+            break
+
+    # TODO: Rimuoviamo token finché non diventa positivo poi aggiungiamo per farlo tornare negativo e vediamo quali DU
+    #  spaiate (token) sono più utili
+    #  Per fare questo è richiesto di rivalutare il sistema prima? I think so?
+
+    return tokens_to_remove
+
+
+def swap_tokens_to_match(start_pred, impacts_sorted, delta: float=0.0):
+    # TODO: to complete
+    index = np.arange(len(impacts_sorted), -1, -1)
+
+    delta_score_to_achieve = abs(start_pred - 0.5) + delta
+    current_delta_score = 0
+
+    for i in index:
+        current_token_impact = -impacts_sorted[i]
+
+        if current_token_impact > 0:
+            pass
