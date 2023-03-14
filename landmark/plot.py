@@ -154,15 +154,22 @@ class PlotExplanation:
 
         def color_descriptions(df_to_color, left_colors, right_colors):
             whitespace = ' '
-            starting_prefix = 'A'
+            left_starting_prefix = 'A'
+            right_starting_prefix = 'A'
+
+            descs_df = pandas.DataFrame(df_to_color['encoded_descs'].to_list(),
+                                    columns=['left_encoded_descs', 'right_encoded_descs'])
+
+            if descs_df['left_encoded_descs'].apply(len).gt(0).any():
+                right_starting_prefix = chr(ord(right_starting_prefix) + len(left_colors))
+
             tmp_df = df_to_color.copy()
 
-            left_attr_to_prefix = {attribute: chr(ord(starting_prefix) + prefix_idx)
+            left_attr_to_prefix = {attribute: chr(ord(left_starting_prefix) + prefix_idx)
                                    for prefix_idx, (attribute, _) in enumerate(left_colors)}
 
-            starting_prefix = chr(ord(starting_prefix) + len(left_colors))
 
-            right_attr_to_prefix = {attribute: chr(ord(starting_prefix) + prefix_idx)
+            right_attr_to_prefix = {attribute: chr(ord(right_starting_prefix) + prefix_idx)
                                    for prefix_idx, (attribute, _) in enumerate(right_colors)}
 
             for index, row in tmp_df.iterrows():
@@ -228,9 +235,9 @@ class PlotExplanation:
         left_colors = [(attribute, color) for attribute, color in zip(left_columns, left_palette)]
         right_colors = [(attribute, color) for attribute, color in zip(right_columns, right_palette)]
 
-        # df_to_color = data_df.copy()
+        df_to_color = data_df.copy()
 
-        colored_df = color_descriptions(data_df, left_colors, right_colors)
+        colored_df = color_descriptions(df_to_color, left_colors, right_colors)
 
         html_page = '<html>'
         html_page += """
@@ -321,6 +328,7 @@ class PlotExplanation:
                 <th>New Prediction</th>
             </tr>
         """
+
         for _, row in colored_df.iterrows():
             left_description = row['left_description']
             right_description = row['right_description']
