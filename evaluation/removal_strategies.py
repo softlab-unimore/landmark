@@ -2,9 +2,9 @@ import numpy as np
 
 def get_tokens_to_remove_five(start_pred, impacts_sorted, percentage, num_round):
     if len(impacts_sorted) >= 5:
-        combination = {'firts1': [[0]], 'first2': [[0, 1]], 'first5': [[0, 1, 2, 3, 4]]}
+        combination = {'first1': [[0]], 'first2': [[0, 1]], 'first5': [[0, 1, 2, 3, 4]]}
     else:
-        combination = {'firts1': [[0]]}
+        combination = {'first1': [[0]]}
 
     tokens_to_remove = get_tokens_to_change_class(start_pred, impacts_sorted)
     combination['change_class'] = [tokens_to_remove]
