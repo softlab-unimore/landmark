@@ -6,8 +6,7 @@ import seaborn as sns
 
 class PlotExplanation:
     @staticmethod
-    def plot_impacts(data, target_col, ax, title):
-
+    def plot_impacts(data, target_col, ax, title, bar_label_fontsize: int=8):
         n = len(data)
         ax.set_xlim(-0.5, 0.5)  # set x axis limits
         ax.set_ylim(-1, n)  # set y axis limits
@@ -16,10 +15,10 @@ class PlotExplanation:
 
         # define arrows
         arrow_starts = np.repeat(0, n)
-        arrow_lengths = data[target_col].values
+        # arrow_lengths = data[target_col].values
+        arrow_lengths = data[target_col].values / 2
         # add arrows to plot
         for i, subject in enumerate(data['column']):
-
             if subject.startswith('l'):
                 arrow_color = '#347768'
             elif subject.startswith('r'):
@@ -37,21 +36,44 @@ class PlotExplanation:
                          width=0.4,  # arrow stem width
                          fc=arrow_color,  # arrow fill color
                          ec=arrow_color,
-                         )  # arrow edge color
+                         zorder=50)  # arrow edge color
                 width = arrow_lengths[i]
-                offset = 40
-                offset = offset if width > 0 else -offset
+                offset = 40 if width > 0 else -40
+                # offset = width / 2
+
+                if width > 0.2:
+                    ha = 'center'
+                    width -= 0.2
+                elif 0 < width < 0.2:
+                    ha = 'right'
+                else:
+                    ha = 'left'
+
+                color = '#ffffff' if width > 0.2 else '#000000'
+
                 ax.annotate(format(width, '.3f'),
-                        (width, i),
-                        ha='right' if width > 0 else 'left',
-                        va='center',
-                        xytext=(offset, 2),
-                        textcoords='offset points')
+                            (width, i),
+                            # ha='right' if width > 0 else 'left',
+                            ha=ha,
+                            va='center',
+                            xytext=(offset, -1),
+                            textcoords='offset points',
+                            zorder=100,
+                            color=color,
+                            fontsize=bar_label_fontsize)
+
+                # ax.text(width, i,
+                #         format(width, '.3f'),
+                #         # (width, i),
+                #         ha='right' if width > 0 else 'left',
+                #         va='center',
+                #         # textcoords='offset points',
+                #         zorder=100)
 
         # format plot
         ax.set_title(title)  # add title
         ax.axvline(x=0, color='0.9', ls='--', lw=2, zorder=0)  # add line at x=0
-        ax.grid(axis='y', color='0.9')  # add a light grid
+        ax.grid(axis='y', color='0.9', zorder=0)  # add a light grid
         ax.set_xlim(-0.5, 0.5)  # set x axis limits
         ax.set_xlabel('Token impact')  # label the x axis
         sns.despine(left=True, bottom=True, ax=ax)
@@ -75,20 +97,27 @@ class PlotExplanation:
 
         if target_col == 'score_right_landmark':
             PlotExplanation.plot_impacts(data[data['column'].str.startswith('l')], target_col, axes[0],
-                                         'Original Tokens')
+                                         'Original Tokens', 8)
             PlotExplanation.plot_impacts(data[data['column'].str.startswith('r')], target_col, axes[1],
-                                         'Augmented Tokens')
+                                         'Augmented Tokens', 8)
         else:
             PlotExplanation.plot_impacts(data[data['column'].str.startswith('r')], target_col, axes[0],
-                                         'Original Tokens')
+                                         'Original Tokens', 8)
             PlotExplanation.plot_impacts(data[data['column'].str.startswith('l')], target_col, axes[1],
-                                         'Augmented Tokens')
+                                         'Augmented Tokens', 8)
             # fig.suptitle('Right Landmark Explanation')
         fig.tight_layout()
 
     @staticmethod
-    def plot(exp, figsize=(16, 6)):
+    def plot(exp, figsize=(16, 6), title: bool=True, y_label: str='Landmark', y_label_fontsize: int=8,
+             bar_label_fontsize: int=8):
         data = exp.copy()
+
+        if figsize[1] < len(data) / 3:
+            figsize = (16, len(data) / 3)
+
+        original_fontsize = plt.rcParams.get('font.size')
+        plt.rcParams.update({'font.size': y_label_fontsize})
 
         data['column'] = data['column'].str.replace('left_','l_').str.replace('right_','r_')
         # initialize a plot
@@ -99,7 +128,7 @@ class PlotExplanation:
                 side_char = land_side[0].lower()
                 data = data.sort_values(by=target_col, ascending=True).reset_index(drop=True)
                 PlotExplanation.plot_impacts(data[data['column'].str.startswith(side_char)], target_col, ax,
-                                                 'Augmented Tokens')
+                                             'Augmented Tokens' if title else '', bar_label_fontsize=bar_label_fontsize)
             axes_for_original = axes[[0,2]]
         else:
             fig, axes = plt.subplots(nrows=1, ncols=2, figsize=figsize)  # create figure
@@ -110,10 +139,11 @@ class PlotExplanation:
             side_char = land_side[0].lower()
             opposite_side_char = 'r' if side_char == 'l' else 'l'
             data = data.sort_values(by=target_col, ascending=True).reset_index(drop=True)
-            PlotExplanation.plot_impacts(data[data['column'].str.startswith(opposite_side_char)], target_col, ax, 'Original Tokens')
+            PlotExplanation.plot_impacts(data[data['column'].str.startswith(opposite_side_char)], target_col, ax,
+                                         'Original Tokens' if title else '', bar_label_fontsize=bar_label_fontsize)
             # if data[data['column'].str.startswith(side_char)][target_col].abs().max()>0.05:
             #     PlotExplanation.plot_impacts(data[data['column'].str.startswith('r')], target_col, axes[1], 'Augmented Tokens')
-            ax.set_ylabel(f'{land_side} Landmark')
+            ax.set_ylabel(f'{land_side} {y_label}')
         # axes[1].set_ylabel('Right Landmark')
 
         # target_col = 'score_left_landmark'
@@ -129,31 +159,38 @@ class PlotExplanation:
         # plt.plot([0.5, 0.5], [0, 1], color='black', linestyle='--', lw=1, transform=gcf().transFigure, clip_on=False)
         # plt.plot([0, 1], [0.5, 0.5], color='lightgreen', lw=5, transform=gcf().transFigure, clip_on=False)
 
+        plt.rcParams.update({'font.size': original_fontsize})
+
         return fig, axes
 
     @staticmethod
     def plot_counterfactual(data_df: pandas.DataFrame, pred_percentage: bool=True,
-                            palette: list=sns.color_palette().as_hex()):
+                            palette: list=sns.color_palette().as_hex(), positive_examples: bool=True,
+                            spaced_attributes: bool=True, beautify_table: bool=True, align_left: bool=False) -> str:
+
+        whitespace = ' '
+
         def generate_strikethrough_description(encoded_description, tokens_to_remove):
             new_description = str()
-            whitespace = ' '
 
             for desc_token in encoded_description:
-                token = desc_token.split('">')[-1]  # remove first font tag part, but still has </font> suffix
-                token = token.split('<')[0] # remove suffix
-                cleaned_token = token.split('_')[-1]  # remove wym prefix
-                first_part_color_tag, second_part_color_tag = desc_token.split(token)  # recompute the html font tag
-
-                if token in tokens_to_remove:
-                    new_description = whitespace.join([new_description, f'<del>{cleaned_token}</del>'])
+                if desc_token == '<br>':
+                    new_description += desc_token
                 else:
-                    cleaned_token = first_part_color_tag + cleaned_token + second_part_color_tag
-                    new_description = whitespace.join([new_description, cleaned_token])
+                    token = desc_token.split('">')[-1]  # remove first font tag part, but still has </font> suffix
+                    token = token.split('<')[0] # remove suffix
+                    cleaned_token = token.split('_')[-1]  # remove wym prefix
+                    first_part_color_tag, second_part_color_tag = desc_token.split(token)  # recompute the html font tag
+
+                    if token in tokens_to_remove:
+                        new_description = whitespace.join([new_description, f'<del>{cleaned_token}</del>'])
+                    else:
+                        cleaned_token = first_part_color_tag + cleaned_token + second_part_color_tag
+                        new_description = whitespace.join([new_description, cleaned_token])
 
             return new_description
 
         def color_descriptions(df_to_color, left_colors, right_colors):
-            whitespace = ' '
             left_starting_prefix = 'A'
             right_starting_prefix = 'A'
 
@@ -189,6 +226,13 @@ class PlotExplanation:
                             if encoded_token.startswith(attribute_prefix):
                                 new_left_encoded_description.append(f'<font color="{color}">{encoded_token}</font>')
 
+                        if left_encoded_description:
+                            if spaced_attributes:
+                                new_left_encoded_description.append('<br>')
+
+                    if spaced_attributes:
+                        new_left_description.append('<br>')
+
                 for attribute, color in right_colors:
                     new_right_description.append(f'<font color="{color}">{row[attribute]}</font>')
 
@@ -198,6 +242,13 @@ class PlotExplanation:
                         for encoded_token in right_encoded_description:
                             if encoded_token.startswith(attribute_prefix):
                                 new_right_encoded_description.append(f'<font color="{color}">{encoded_token}</font>')
+
+                        if right_encoded_description:
+                            if spaced_attributes:
+                                new_right_encoded_description.append('<br>')
+
+                    if spaced_attributes:
+                        new_right_description.append('<br>')
 
                 df_to_color.at[index, 'left_description'] = whitespace.join(new_left_description)
                 df_to_color.at[index, 'right_description'] = whitespace.join(new_right_description)
@@ -273,16 +324,11 @@ class PlotExplanation:
                 table{
                     border: 3px solid black;
                     border-radius: 15px 15px 15px 15px;
-                    min-width: 100%;
                 }
                 
                 #container{
                     margin: 0 auto;
-                    min-width: 80%;
-                }
-                
-                td {
-                    padding: 10px;
+                    /* min-width: 100%; */
                 }
                 
                 table tbody tr:last-child{
@@ -305,8 +351,9 @@ class PlotExplanation:
                     border: 2px solid black;
                 }
                 
-                tr.entity1 tr.entity2 {
+                .entity1, .entity2 {
                     border-left: 2px solid black;
+                    border-right: 2px solid black;
                 }
                 
                 html{
@@ -318,22 +365,39 @@ class PlotExplanation:
         """
         html_page += '<body>'
         html_page += '<span id="container">'
-        html_page += '<table>'
-        html_page += """
+
+        table_style = 'style="{}"'
+        table_css_properties = str()
+
+        if beautify_table:
+            table_css_properties += "min-width: 70%;"
+
+        if not align_left:
+            table_css_properties = whitespace.join([table_css_properties, "margin: 0 auto;"])
+
+        if not table_css_properties:
+            table_style = str()
+
+        else:
+            table_style = table_style.format(table_css_properties)
+
+        td_style = 'style="padding: 10px;"' if beautify_table else ''
+        html_page += f'<table {table_style}>'
+        html_page += f"""
             <tr id="first_row">
                 <th></th>
-                <th>Match</th>
+                <th>{"Match" if positive_examples else "Non-Match"}</th>
                 <th>Prediction</th>
-                <th>Non-Match</th>
-                <th>New Prediction</th>
+                <th>{"Non-Match" if positive_examples else "Match"}</th>
+                <th>New<br>Prediction</th>
             </tr>
         """
 
         for _, row in colored_df.iterrows():
             left_description = row['left_description']
             right_description = row['right_description']
-            start_pred = row['start_pred']
-            new_pred = row['new_pred']
+            start_pred = row['start_pred'] if positive_examples else row['new_pred']
+            new_pred = row['new_pred'] if positive_examples else row['start_pred']
             left_encoded_desc, right_encoded_desc = row['encoded_descs']
             evaluate_removing_du = False
 
@@ -380,13 +444,13 @@ class PlotExplanation:
 
             html_page += f"""
                 <tr class='tr1'>
-                    <td class='entity1'>
+                    <td class='entity1' {td_style}>
                         Entity 1
                     </td>
-                    <td class='left_entity1'>
+                    <td class='left_entity1' {td_style}>
                         {left_description}
                     </td>
-                    <td class="pred" rowspan=2>
+                    <td class="pred" rowspan=2 {td_style}>
             """
             if pred_percentage:
                 html_page += f"{start_pred:.2%}"
@@ -395,10 +459,10 @@ class PlotExplanation:
 
             html_page += f"""
                     </td>
-                    <td class='right_entity1'>
+                    <td class='right_entity1' {td_style}>
                         {left_strikethrough_desc} 
                     </td>
-                    <td class="pred" rowspan=2>
+                    <td class="pred" rowspan=2 {td_style}>
             """
             if pred_percentage:
                 html_page += f"{new_pred:.2%}"
@@ -409,13 +473,13 @@ class PlotExplanation:
                     </td>
                 </tr>
                 <tr class='tr2'>
-                    <td class='entity2'>
+                    <td class='entity2' {td_style}>
                         Entity 2
                     </td>
-                    <td class='left_entity2'>
+                    <td class='left_entity2' {td_style}>
                         {right_description}
                     </td>
-                    <td class='right_entity2'>
+                    <td class='right_entity2' {td_style}>
                         {right_strikethrough_desc}
                     </td>
                 </tr>
