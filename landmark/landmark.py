@@ -30,7 +30,7 @@ class Landmark(object):
         self.overlap = overlap
         self.add_before_perturbation = add_before_perturbation
         self.add_after_perturbation = add_after_perturbation
-        self.impacts = None
+        self.impacts = list()
 
         self.splitter = re.compile(split_expression)
         self.split_expression = split_expression
@@ -116,7 +116,7 @@ class Landmark(object):
             self.variable_data = None
             self.fixed_data = None
             self.variable_mapper = None
-            self.impacts = None
+            self.impacts = list()
 
             self.cols = [x for x in self.dataset.columns if x not in self.exclude_attrs]
             self.left_cols = [x for x in self.cols if x.startswith(self.lprefix)]
@@ -376,10 +376,17 @@ class Landmark(object):
         exchanged_idx = [False] * len(view)
         lengths = {col: len(words) for col, words in tokens_divided['tokens'].items()}
         for col, words in tokens_divided['tokens_not_overlapped'].items():  # words injected in the opposite side
-            prefix, col_name = col.split('_')
-            prefix = 'left_' if prefix == 'right' else 'right_'
-            opposite_col = prefix + col_name
+            if col.startswith('left_'):
+                prefix = 'left_'
+                opposite_prefix = 'right_'
+            else:
+                prefix = 'right_'
+                opposite_prefix = 'left_'
+
+            col_name = col.lstrip(prefix)
+            opposite_col = opposite_prefix + col_name
             exchanged_idx = exchanged_idx | ((view.position >= lengths[opposite_col]) & (view.column == opposite_col))
+
         exchanged = view[exchanged_idx]
         view = view[~exchanged_idx]
         # determine injected impacts
@@ -397,9 +404,11 @@ class Landmark(object):
 
         return view
 
-    def plot(self, explanation, el, figsize=(16,6)):
+    def plot(self, explanation, el, figsize=(16,6), title: bool=True, y_label: str='Landmark',
+             y_label_fontsize: int=8, bar_label_fontsize: int=8):
         exp_double = self.double_explanation_conversion(explanation, el)
-        return PlotExplanation.plot(exp_double, figsize)
+        return PlotExplanation.plot(exp_double, figsize, title=title, y_label=y_label,
+                                    y_label_fontsize=y_label_fontsize, bar_label_fontsize=bar_label_fontsize)
 
 
 class Mapper(object):

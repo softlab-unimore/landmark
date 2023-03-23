@@ -240,6 +240,12 @@ class EvaluateExplanation(Landmark):
 
         # init of evaluation parameters
         self.impacts_df = impacts_df
+
+        if 'label' in self.impacts_df.columns and (self.impacts_df['label'] == 1).all():
+            self.positive_examples = True
+        else:
+            self.positive_examples = False
+
         self.percentage = percentage
         self.num_rounds = num_rounds
 
@@ -300,12 +306,15 @@ class EvaluateExplanation(Landmark):
             None
         """
 
-        # updated_wym_params = False
-
         super().update_settings(**kwargs)
 
         if 'impacts_df' in kwargs:
             self.impacts_df = kwargs['impacts_df']
+
+            if 'label' in self.impacts_df.columns and (self.impacts_df['label'] == 1).all():
+                self.positive_examples = True
+            else:
+                self.positive_examples = False
 
         if 'percentage' in kwargs:
             self.percentage = kwargs['percentage']
@@ -380,8 +389,12 @@ class EvaluateExplanation(Landmark):
 
         print("EvaluateExplanation settings updated.")
 
-    def plot_counterfactual(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex()):
-        return PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette)
+    def plot_counterfactual(self, pred_percentage: bool=True, palette: list=seaborn.color_palette().as_hex(),
+                            spaced_attributes: bool=True, beautify_table: bool=True, align_left: bool=False):
+        return PlotExplanation.plot_counterfactual(self.counterfactuals_plotting_data, pred_percentage, palette,
+                                                   positive_examples=self.positive_examples,
+                                                   spaced_attributes=spaced_attributes, beautify_table=beautify_table,
+                                                   align_left=align_left)
 
     def generate_counterfactual_examples(self):
         def generate_description_from_side_attributes(df_row, side='left'):
@@ -390,7 +403,9 @@ class EvaluateExplanation(Landmark):
 
             return ' '.join(
                 [str(df_row[key]) for key in df_row.keys() if
-                 key.startswith(f'{side}_') and df_row[key] is not np.nan and key != f'{side}_id'])
+                 key.startswith(f'{side}_') and
+                 df_row[key] is not np.nan and
+                 key not in (f'{side}_id', f'{side}_description')])
 
         def split_left_and_right_word_prefixes(group_df):
             encoded_left_desc = group_df[group_df['column'].str.startswith('left_')]['word_prefix'].to_list()
