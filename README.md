@@ -60,7 +60,10 @@ Get started with Landmark Explanation!
 
 ## Reference
 
-For a detailed description of the work please read [our paper](https://openproceedings.org/2021/conf/edbt/p259.pdf). Please cite the paper if you use the code from this repository in your work.
+For a detailed description of the work please read our papers. Please cite the paper if you use the code from this repository in your work.
+[Using landmarks for explaining entity matching models](https://openproceedings.org/2021/conf/edbt/p259.pdf)
+
+
 
 ```
 @inproceedings{DBLP:conf/edbt/BaraldiBP021,
@@ -75,6 +78,8 @@ For a detailed description of the work please read [our paper](https://openproce
   year      = {2021}
 }
 ```
+Check out our demo as well:
+[Landmark explanation: An explainer for entity matching models](https://scholar.google.com/citations?user=niRnTQ4AAAAJ&hl=it)
 
 ## License
 [MIT License](LICENSE)
